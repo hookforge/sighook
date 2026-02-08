@@ -24,6 +24,9 @@ jobs:
         with:
           cmake-version: '3.31.6'
 
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Cargo fmt
         run: cargo fmt --all -- --check
 
@@ -36,11 +39,8 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --all-targets --target aarch64-apple-darwin -- -D warnings
 
-      - name: Build all examples (macOS)
-        run: cargo build --examples --target aarch64-apple-darwin
-
-      - name: Build patch_asm example (macOS)
-        run: cargo build --example patch_asm_add_to_mul --features patch_asm --target aarch64-apple-darwin
+      - name: Build all examples (macOS, patch_asm enabled)
+        run: cargo build --examples --features patch_asm --target aarch64-apple-darwin
 
       - name: Run macOS example smoke tests
         shell: bash
@@ -95,6 +95,9 @@ jobs:
         with:
           cmake-version: '3.31.6'
 
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Cargo check
         run: cargo check --all-targets --target x86_64-unknown-linux-gnu
 
@@ -104,11 +107,8 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
 
-      - name: Build all examples (Linux x86_64)
-        run: cargo build --examples --target x86_64-unknown-linux-gnu
-
-      - name: Build patch_asm example (Linux x86_64)
-        run: cargo build --example patch_asm_add_to_mul --features patch_asm --target x86_64-unknown-linux-gnu
+      - name: Build all examples (Linux x86_64, patch_asm enabled)
+        run: cargo build --examples --features patch_asm --target x86_64-unknown-linux-gnu
 
       - name: Run Linux x86_64 example smoke tests
         shell: bash
@@ -163,6 +163,9 @@ jobs:
         with:
           cmake-version: '3.31.6'
 
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Cargo check
         run: cargo check --all-targets --target aarch64-unknown-linux-gnu
 
@@ -172,11 +175,8 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
 
-      - name: Build all examples (Linux aarch64)
-        run: cargo build --examples --target aarch64-unknown-linux-gnu
-
-      - name: Build patch_asm example (Linux aarch64)
-        run: cargo build --example patch_asm_add_to_mul --features patch_asm --target aarch64-unknown-linux-gnu
+      - name: Build all examples (Linux aarch64, patch_asm enabled)
+        run: cargo build --examples --features patch_asm --target aarch64-unknown-linux-gnu
 
       - name: Run Linux aarch64 example smoke tests
         shell: bash
@@ -231,6 +231,9 @@ jobs:
         with:
           cmake-version: '3.31.6'
 
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Cargo check
         run: cargo check --all-targets --target aarch64-apple-ios
 
@@ -261,6 +264,9 @@ jobs:
         uses: jwlawson/actions-setup-cmake@v2
         with:
           cmake-version: '3.31.6'
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
