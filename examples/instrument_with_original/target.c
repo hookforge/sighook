@@ -18,7 +18,18 @@ __asm__(
     "  add w0, w8, w9\n"
     "  ret\n"
     ".size calc, .-calc\n");
-#elif defined(__x86_64__)
+#elif defined(__x86_64__) && defined(__APPLE__)
+int calc(int a, int b);
+
+__asm__(
+    ".text\n"
+    ".globl _calc\n"
+    "_calc:\n"
+    "  mov %edi, %eax\n"
+    "  add %esi, %eax\n"
+    "  nop\n"
+    "  ret\n");
+#elif defined(__x86_64__) && defined(__linux__)
 int calc(int a, int b);
 
 __asm__(
