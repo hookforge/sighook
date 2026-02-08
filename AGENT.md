@@ -1,6 +1,6 @@
 # sighook Agent Notes
 
-Last updated: 2026-02-07
+Last updated: 2026-02-08
 
 ## 1) Current Project Snapshot
 
@@ -40,6 +40,8 @@ Last updated: 2026-02-07
 - `rust-macos-aarch64`: fmt/check/doc-test/clippy + 4 example smoke tests.
 - `rust-linux-x86_64`: check/doc-test/clippy + 4 example smoke tests.
 - `rust-linux-aarch64`: check/doc-test/clippy + 4 example smoke tests.
+- `rust-ios-aarch64`: check/tests-compile/clippy + build all examples.
+- `rust-android-aarch64`: check/tests-compile/clippy + build all examples (NDK linker configured).
 
 ### Example smoke outputs expected in CI
 
@@ -62,8 +64,22 @@ Last updated: 2026-02-07
 ### Runtime model assumptions
 
 - Single-thread model by design (`static mut` global state).
-- Fixed instrument slot array (no dynamic allocator-based slot registry).
+- Fixed instrument slot array (`MAX_INSTRUMENTS = 256`; no dynamic allocator-based slot registry).
 - No locking primitives in hot path.
+
+### Slot registry design rationale (important)
+
+- Current implementation intentionally uses a fixed array + linear scan for slot lookup.
+- Reason: signal-trap path prioritizes deterministic behavior and avoids allocator/locking complexity.
+- At current scale (`<=256` active patchpoints), lookup overhead is acceptable compared with trap/signal overhead.
+- Do **not** switch directly to `HashMap` in trap hot path without a signal-safety/concurrency design review.
+- If future demand exceeds 256 hooks or profiling shows lookup bottleneck, prefer a preallocated table + lock-free read strategy rather than allocator-driven `HashMap` mutation in hot path.
+
+### API/implementation conventions to keep
+
+- Keep public API signatures stable unless explicitly planned as breaking change.
+- Prefer single-entry helper APIs with target-specific `cfg` at function definition level (avoid duplicated call-site `cfg` branching when possible).
+- Keep platform branches explicit in `context`/`signal`/`memory` modules; these branches are architecture/ABI-driven and should not be over-abstracted.
 
 ## 4) Platform-specific Decisions (Keep these)
 
@@ -101,6 +117,10 @@ cargo check --all-targets --target aarch64-apple-darwin
 cargo check --all-targets --target aarch64-apple-ios
 cargo check --all-targets --target aarch64-linux-android
 cargo check --all-targets --target x86_64-unknown-linux-gnu
+
+# optional but recommended pre-release target checks
+cargo check --tests --target aarch64-apple-ios
+cargo check --tests --target aarch64-linux-android
 ```
 
 If local toolchain supports it, also run:
@@ -112,6 +132,16 @@ cargo clippy --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
 
 ## 7) Near-term Next Steps
 
-- Add CI matrix coverage for `aarch64-apple-ios` and `aarch64-linux-android` compile checks.
 - Validate runtime hooking behavior on real iOS/Android environments (trap delivery and patch permissions).
+- Add benchmark/profiling harness for slot lookup cost under high patchpoint counts.
+- Decide threshold/plan for optional slot-registry redesign if active patchpoints regularly approach `MAX_INSTRUMENTS`.
 - Optional: introduce a lightweight backend trait to reduce cfg branching in `lib.rs` and simplify future ports.
+
+## 8) Build/Release Requirements
+
+- Rust toolchain baseline: stable `1.85+`.
+- Required components in CI/dev: `rustfmt`, `clippy`.
+- Android build baseline: NDK `r26d` (or compatible) and linker env:
+  `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=.../aarch64-linux-android34-clang`.
+- Linux example smoke tests rely on `cc` and `-rdynamic` for `dlsym` symbol visibility.
+- iOS target currently validates compile/link (`check`, `check --tests`, `clippy`, examples build), not preload-style runtime smoke.
