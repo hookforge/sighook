@@ -5,7 +5,7 @@ Last updated: 2026-02-09
 ## 1) Current Project Snapshot
 
 - Crate: `sighook`
-- Current version: `0.5.0`
+- Current version: `0.6.0`
 - Status: multi-platform runtime hook crate with Apple/Linux/Android support (AArch64 + Linux x86_64).
 - Current architecture focus: platform-specific backend code behind stable public API.
 
