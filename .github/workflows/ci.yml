@@ -77,6 +77,67 @@ jobs:
           echo "$OUT"
           [[ "$OUT" == *"calc(6, 7) = 42"* ]]
 
+  rust-macos-x86_64:
+    runs-on: macos-13
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+          components: clippy
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo check
+        run: cargo check --all-targets --target x86_64-apple-darwin
+
+      - name: Cargo test
+        run: cargo test --doc --target x86_64-apple-darwin
+
+      - name: Cargo clippy
+        run: cargo clippy --all-targets --target x86_64-apple-darwin -- -D warnings
+
+      - name: Build four base examples (macOS x86_64)
+        run: |
+          cargo build --example instrument_with_original --target x86_64-apple-darwin
+          cargo build --example instrument_no_original --target x86_64-apple-darwin
+          cargo build --example inline_hook_far --target x86_64-apple-darwin
+          cargo build --example patchcode_add_to_mul --target x86_64-apple-darwin
+
+      - name: Run macOS x86_64 base example smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cc -O0 -fno-inline examples/instrument_with_original/target.c -o examples/instrument_with_original/app
+          DYLIB="$PWD/target/x86_64-apple-darwin/debug/examples/libinstrument_with_original.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/instrument_with_original/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(1, 2) = 42"* ]]
+
+          cc -O0 -fno-inline examples/instrument_no_original/target.c -o examples/instrument_no_original/app
+          DYLIB="$PWD/target/x86_64-apple-darwin/debug/examples/libinstrument_no_original.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/instrument_no_original/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(4, 5) = 99"* ]]
+
+          cc -O0 -fno-inline examples/inline_hook_far/target.c -o examples/inline_hook_far/app
+          DYLIB="$PWD/target/x86_64-apple-darwin/debug/examples/libinline_hook_far.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/inline_hook_far/app)
+          echo "$OUT"
+          [[ "$OUT" == *"target_add(6, 7) = 42"* ]]
+
+          cc -O0 -fno-inline examples/patchcode_add_to_mul/target.c -o examples/patchcode_add_to_mul/app
+          DYLIB="$PWD/target/x86_64-apple-darwin/debug/examples/libpatchcode_add_to_mul.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/patchcode_add_to_mul/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(6, 7) = 42"* ]]
+
   rust-linux-x86_64:
     runs-on: ubuntu-24.04
 
