@@ -3,6 +3,7 @@
 
 #[cfg(not(any(
     all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"),
+    all(target_os = "macos", target_arch = "x86_64"),
     all(
         any(target_os = "linux", target_os = "android"),
         target_arch = "aarch64"
@@ -10,13 +11,14 @@
     all(target_os = "linux", target_arch = "x86_64")
 )))]
 compile_error!(
-    "sighook only supports Apple aarch64 (macOS/iOS), Linux/Android aarch64, and Linux x86_64."
+    "sighook only supports Apple aarch64/x86_64 (macOS), Apple aarch64 (iOS), Linux/Android aarch64, and Linux x86_64."
 );
 
 #[cfg(all(
     feature = "patch_asm",
     any(
         all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
         all(target_os = "linux", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
     )
@@ -30,7 +32,7 @@ mod signal;
 mod state;
 mod trampoline;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 pub use context::{HookContext, InstrumentCallback};
 #[cfg(target_arch = "aarch64")]
 pub use context::{HookContext, InstrumentCallback, XRegisters, XRegistersNamed};
@@ -56,7 +58,7 @@ pub use error::SigHookError;
 /// ```
 #[cfg(any(
     target_arch = "aarch64",
-    all(target_os = "linux", target_arch = "x86_64")
+    all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos"))
 ))]
 pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
     memory::patch_u32(address, new_opcode)
@@ -77,7 +79,7 @@ pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
 /// # Example
 ///
 /// ```rust,no_run
-/// # #[cfg(all(feature = "patch_asm", any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
+/// # #[cfg(all(feature = "patch_asm", any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "macos", target_arch = "x86_64"), all(target_os = "linux", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
 /// # {
 /// use sighook::patch_asm;
 ///
@@ -91,6 +93,7 @@ pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
     feature = "patch_asm",
     any(
         all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
         all(target_os = "linux", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
     )
@@ -179,7 +182,7 @@ fn instrument_internal(
             original.to_le_bytes().to_vec()
         };
 
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
         let original_bytes = {
             let original_bytes = memory::read_bytes(address, step_len as usize)?;
             let _ = memory::patch_u8(address, memory::int3_opcode())?;
@@ -228,7 +231,7 @@ pub fn inline_hook(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
         }
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     {
         if let Ok(jmp) = memory::encode_jmp_rel32(addr, replace_fn) {
             let original = memory::patch_bytes_public(addr, &jmp)?;

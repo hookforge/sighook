@@ -54,7 +54,7 @@ pub struct HookContext {
     pub pad: u32,
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct HookContext {
@@ -134,6 +134,39 @@ pub unsafe fn free_ctx(ctx: *mut HookContext) {
     let _ = unsafe { Box::from_raw(ctx) };
 }
 
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub unsafe fn remap_ctx(_uc: *mut libc::ucontext_t) -> *mut HookContext {
+    let mcontext = unsafe { (*_uc).uc_mcontext };
+    if mcontext.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let ss = unsafe { &(*mcontext).__ss };
+
+    let ctx = HookContext {
+        r8: ss.__r8,
+        r9: ss.__r9,
+        r10: ss.__r10,
+        r11: ss.__r11,
+        r12: ss.__r12,
+        r13: ss.__r13,
+        r14: ss.__r14,
+        r15: ss.__r15,
+        rdi: ss.__rdi,
+        rsi: ss.__rsi,
+        rbp: ss.__rbp,
+        rbx: ss.__rbx,
+        rdx: ss.__rdx,
+        rax: ss.__rax,
+        rcx: ss.__rcx,
+        rsp: ss.__rsp,
+        rip: ss.__rip,
+        eflags: ss.__rflags,
+    };
+
+    Box::into_raw(Box::new(ctx))
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub unsafe fn remap_ctx(_uc: *mut libc::ucontext_t) -> *mut HookContext {
     let gregs = unsafe { &(*_uc).uc_mcontext.gregs };
@@ -162,6 +195,36 @@ pub unsafe fn remap_ctx(_uc: *mut libc::ucontext_t) -> *mut HookContext {
     Box::into_raw(Box::new(ctx))
 }
 
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub unsafe fn write_back_ctx(_uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
+    let mcontext = unsafe { (*_uc).uc_mcontext };
+    if mcontext.is_null() {
+        return;
+    }
+
+    let ss = unsafe { &mut (*mcontext).__ss };
+    let ctx = unsafe { &*ctx };
+
+    ss.__r8 = ctx.r8;
+    ss.__r9 = ctx.r9;
+    ss.__r10 = ctx.r10;
+    ss.__r11 = ctx.r11;
+    ss.__r12 = ctx.r12;
+    ss.__r13 = ctx.r13;
+    ss.__r14 = ctx.r14;
+    ss.__r15 = ctx.r15;
+    ss.__rdi = ctx.rdi;
+    ss.__rsi = ctx.rsi;
+    ss.__rbp = ctx.rbp;
+    ss.__rbx = ctx.rbx;
+    ss.__rdx = ctx.rdx;
+    ss.__rax = ctx.rax;
+    ss.__rcx = ctx.rcx;
+    ss.__rsp = ctx.rsp;
+    ss.__rip = ctx.rip;
+    ss.__rflags = ctx.eflags;
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub unsafe fn write_back_ctx(_uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
     let gregs = unsafe { &mut (*_uc).uc_mcontext.gregs };
@@ -187,7 +250,7 @@ pub unsafe fn write_back_ctx(_uc: *mut libc::ucontext_t, ctx: *mut HookContext) 
     gregs[libc::REG_EFL as usize] = ctx.eflags as libc::greg_t;
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 pub unsafe fn free_ctx(ctx: *mut HookContext) {
     let _ = unsafe { Box::from_raw(ctx) };
 }

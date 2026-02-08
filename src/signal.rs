@@ -80,7 +80,7 @@ extern "C" fn trap_handler(_sig: c_int, info: *mut libc::siginfo_t, uctx: *mut c
     }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 extern "C" fn trap_handler(_sig: c_int, info: *mut libc::siginfo_t, uctx: *mut c_void) {
     use crate::context::{free_ctx, remap_ctx, write_back_ctx};
     use crate::memory::{is_int3, read_u8};
@@ -158,7 +158,7 @@ fn handle_trap_aarch64(
     set_pc(ctx_ptr, next_pc, trampoline_pc);
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 fn handle_trap_x86_64(
     address: u64,
     ctx_ptr: *mut crate::context::HookContext,

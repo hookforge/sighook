@@ -20,6 +20,16 @@ pub enum SigHookError {
         kr: libc::kern_return_t,
         errno: c_int,
     },
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    ProtectWritableFailed {
+        kr: libc::kern_return_t,
+        errno: c_int,
+    },
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    ProtectExecutableFailed {
+        kr: libc::kern_return_t,
+        errno: c_int,
+    },
     #[cfg(all(
         any(target_os = "linux", target_os = "android"),
         any(target_arch = "aarch64", target_arch = "x86_64")
@@ -78,6 +88,20 @@ impl fmt::Display for SigHookError {
                 )
             }
             #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
+            SigHookError::ProtectExecutableFailed { kr, errno } => {
+                write!(
+                    f,
+                    "mach_vm_protect executable failed (kr={kr}, errno={errno})"
+                )
+            }
+            #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+            SigHookError::ProtectWritableFailed { kr, errno } => {
+                write!(
+                    f,
+                    "mach_vm_protect writable failed (kr={kr}, errno={errno})"
+                )
+            }
+            #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
             SigHookError::ProtectExecutableFailed { kr, errno } => {
                 write!(
                     f,

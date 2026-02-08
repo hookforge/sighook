@@ -25,6 +25,7 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 ## Platform Support
 
 - `aarch64-apple-darwin`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook`)
+- `x86_64-apple-darwin`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook`)
 - `aarch64-apple-ios`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook`)
 - `aarch64-unknown-linux-gnu`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook`)
 - `aarch64-linux-android`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook`)
@@ -34,6 +35,7 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 `patch_asm` is currently available on:
 
 - `aarch64-apple-darwin`
+- `x86_64-apple-darwin`
 - `aarch64-unknown-linux-gnu`
 - `x86_64-unknown-linux-gnu`
 
@@ -80,7 +82,7 @@ let target_instruction = 0x1000_0000_u64;
 #[cfg(target_arch = "aarch64")]
 let _original = patch_asm(target_instruction, "mul w0, w8, w9")?;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 let _original = patch_asm(target_instruction, "imul %edx, %eax; nop")?;
 # }
 # Ok::<(), sighook::SigHookError>(())

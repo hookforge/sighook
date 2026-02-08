@@ -1,9 +1,9 @@
 use sighook::{HookContext, instrument_no_original};
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
 const ADD_INSN_OFFSET: u64 = 0x14;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 const X86_PATCHPOINT_OFFSET: u64 = 0x4;
 
 extern "C" fn replace_logic(_address: u64, ctx: *mut HookContext) {
@@ -13,7 +13,7 @@ extern "C" fn replace_logic(_address: u64, ctx: *mut HookContext) {
             (*ctx).regs.named.x0 = 99;
         }
 
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
         {
             (*ctx).rax = 99;
         }
@@ -46,7 +46,7 @@ extern "C" fn init() {
                 symbol as u64
             }
 
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
             {
                 let symbol = libc::dlsym(libc::RTLD_DEFAULT, c"calc".as_ptr());
                 if symbol.is_null() {
@@ -55,7 +55,7 @@ extern "C" fn init() {
                 symbol as u64 + X86_PATCHPOINT_OFFSET
             }
 
-            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
             {
                 let symbol = libc::dlsym(libc::RTLD_DEFAULT, c"calc".as_ptr());
                 if symbol.is_null() {

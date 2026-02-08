@@ -1,6 +1,6 @@
 # sighook Agent Notes
 
-Last updated: 2026-02-08
+Last updated: 2026-02-09
 
 ## 1) Current Project Snapshot
 
@@ -34,6 +34,13 @@ Last updated: 2026-02-08
 - `aarch64-unknown-linux-gnu`
 - `aarch64-linux-android`
 - `x86_64-unknown-linux-gnu`
+
+### Recent compatibility note (macOS x86_64)
+
+- `src/memory.rs` executable-permission restore now uses a fallback strategy on macOS x86_64:
+  - first try `VM_PROT_READ | VM_PROT_EXECUTE`
+  - if that fails, retry with `VM_PROT_READ | VM_PROT_EXECUTE | VM_PROT_COPY`
+- This avoids regressions where restoring executable protection fails in some injected/runtime environments.
 
 ### CI jobs (always-on for active matrix)
 
@@ -129,6 +136,17 @@ If local toolchain supports it, also run:
 cargo check --all-targets --target aarch64-unknown-linux-gnu
 cargo clippy --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
 ```
+
+Additional fast local checks currently in-tree:
+
+```bash
+cargo test --all-targets
+```
+
+`src/memory.rs` now contains unit tests for:
+
+- page-range alignment math (`protect_range_start_len`)
+- target-dependent executable restore protection list on Apple targets
 
 ## 7) Near-term Next Steps
 

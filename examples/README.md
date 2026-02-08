@@ -5,6 +5,7 @@ Each subdirectory demonstrates one `sighook` API as a Cargo example target.
 Current supported host targets:
 
 - `aarch64-apple-darwin`
+- `x86_64-apple-darwin`
 - `aarch64-unknown-linux-gnu`
 - `x86_64-unknown-linux-gnu`
 
@@ -34,6 +35,7 @@ Available examples:
 
 - `aarch64-apple-darwin`: `patchcode` / `instrument` / `instrument_no_original` / `inline_hook`
 - `aarch64-apple-darwin`: plus optional `patch_asm` smoke (`--features patch_asm`)
+- `x86_64-apple-darwin`: compile coverage for all 4 examples, plus optional `patch_asm` build
 - `aarch64-unknown-linux-gnu`: runtime smoke coverage for all 4 examples (CI)
 - `aarch64-unknown-linux-gnu`: plus optional `patch_asm` smoke (`--features patch_asm`)
 - `x86_64-unknown-linux-gnu`: runtime smoke coverage for all 4 examples (CI), plus optional `patch_asm` smoke (`--features patch_asm`)

@@ -56,7 +56,7 @@ pub(crate) fn create_original_trampoline(
         flush_instruction_cache(memory, 20);
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     {
         if original_bytes.is_empty() {
             return Err(SigHookError::InvalidAddress);
@@ -96,7 +96,7 @@ pub(crate) fn create_original_trampoline(
     Ok(base as u64)
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 fn encode_abs_jmp_indirect(to_address: u64) -> [u8; 14] {
     let mut bytes = [0u8; 14];
     bytes[0] = 0xFF;

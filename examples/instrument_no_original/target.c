@@ -18,7 +18,7 @@ __asm__(
     "  add w0, w8, w9\n"
     "  ret\n"
     ".size calc, .-calc\n");
-#elif defined(__linux__) && defined(__x86_64__)
+#elif defined(__x86_64__)
 int calc(int a, int b);
 
 __asm__(
