@@ -1,4 +1,10 @@
-#[cfg(all(feature = "patch_asm", target_arch = "aarch64"))]
+#[cfg(all(
+    feature = "patch_asm",
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64")
+    )
+))]
 use keystone_engine::{Arch, Keystone, KeystoneError, Mode};
 
 #[cfg(all(feature = "patch_asm", target_os = "linux", target_arch = "x86_64"))]
@@ -8,7 +14,14 @@ use crate::error::SigHookError;
 
 const PATCH_ASM_WIDTH: usize = 4;
 
-#[cfg(feature = "patch_asm")]
+#[cfg(all(
+    feature = "patch_asm",
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )
+))]
 pub(crate) fn assemble_patch_opcode(address: u64, asm: &str) -> Result<u32, SigHookError> {
     let trimmed = asm.trim();
     if trimmed.is_empty() {
@@ -21,7 +34,10 @@ pub(crate) fn assemble_patch_opcode(address: u64, asm: &str) -> Result<u32, SigH
         return to_u32_opcode(bytes);
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64")
+    ))]
     {
         let bytes = assemble_aarch64(trimmed, address)?;
         return to_u32_opcode(bytes);
@@ -31,7 +47,13 @@ pub(crate) fn assemble_patch_opcode(address: u64, asm: &str) -> Result<u32, SigH
     Err(SigHookError::UnsupportedPlatform)
 }
 
-#[cfg(all(feature = "patch_asm", target_arch = "aarch64"))]
+#[cfg(all(
+    feature = "patch_asm",
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64")
+    )
+))]
 fn assemble_aarch64(asm: &str, address: u64) -> Result<Vec<u8>, SigHookError> {
     let engine = keystone_engine_init(Arch::ARM64, Mode::LITTLE_ENDIAN)?;
     let output = engine
@@ -56,7 +78,8 @@ fn assemble_x86_64(asm: &str, address: u64) -> Result<Vec<u8>, SigHookError> {
 #[cfg(all(
     feature = "patch_asm",
     any(
-        target_arch = "aarch64",
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
     )
 ))]
@@ -67,7 +90,8 @@ fn keystone_engine_init(arch: Arch, mode: Mode) -> Result<Keystone, SigHookError
 #[cfg(all(
     feature = "patch_asm",
     any(
-        target_arch = "aarch64",
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
     )
 ))]

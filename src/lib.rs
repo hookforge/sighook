@@ -13,7 +13,14 @@ compile_error!(
     "sighook only supports Apple aarch64 (macOS/iOS), Linux/Android aarch64, and Linux x86_64."
 );
 
-#[cfg(feature = "patch_asm")]
+#[cfg(all(
+    feature = "patch_asm",
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )
+))]
 mod asm;
 mod constants;
 mod context;
@@ -70,7 +77,7 @@ pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
 /// # Example
 ///
 /// ```rust,no_run
-/// # #[cfg(feature = "patch_asm")]
+/// # #[cfg(all(feature = "patch_asm", any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
 /// # {
 /// use sighook::patch_asm;
 ///
@@ -83,7 +90,8 @@ pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
 #[cfg(all(
     feature = "patch_asm",
     any(
-        target_arch = "aarch64",
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
     )
 ))]

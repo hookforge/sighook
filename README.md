@@ -31,6 +31,12 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 - `x86_64-unknown-linux-gnu`: full API support; CI smoke validates `patchcode` / `instrument` / `instrument_no_original` / `inline_hook` examples
 - single-thread model (`static mut` internal state)
 
+`patch_asm` is currently available on:
+
+- `aarch64-apple-darwin`
+- `aarch64-unknown-linux-gnu`
+- `x86_64-unknown-linux-gnu`
+
 ## Installation
 
 ```toml

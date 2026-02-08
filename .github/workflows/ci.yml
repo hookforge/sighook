@@ -243,8 +243,6 @@ jobs:
       - name: Build all examples (iOS aarch64)
         run: cargo build --examples --target aarch64-apple-ios
 
-      - name: Build patch_asm example (iOS aarch64)
-        run: cargo build --example patch_asm_add_to_mul --features patch_asm --target aarch64-apple-ios
 
   rust-android-aarch64:
     runs-on: ubuntu-24.04
@@ -286,6 +284,3 @@ jobs:
 
       - name: Build all examples (Android aarch64)
         run: cargo build --examples --target aarch64-linux-android
-
-      - name: Build patch_asm example (Android aarch64)
-        run: cargo build --example patch_asm_add_to_mul --features patch_asm --target aarch64-linux-android
