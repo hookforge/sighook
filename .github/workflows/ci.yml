@@ -78,7 +78,7 @@ jobs:
           [[ "$OUT" == *"calc(6, 7) = 42"* ]]
 
   rust-macos-x86_64:
-    runs-on: macos-13
+    runs-on: macos-15-intel
 
     steps:
       - name: Checkout
