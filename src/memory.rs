@@ -248,7 +248,7 @@ pub(crate) fn patch_bytes_public(address: u64, bytes: &[u8]) -> Result<Vec<u8>, 
     patch_bytes(address, bytes)
 }
 
-fn flush_instruction_cache(address: *mut c_void, len: usize) {
+pub(crate) fn flush_instruction_cache(address: *mut c_void, len: usize) {
     #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
     unsafe {
         sys_icache_invalidate(address, len);
@@ -325,12 +325,12 @@ pub(crate) fn encode_jmp_rel32(
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub(crate) fn encode_absolute_jump(to_address: u64) -> [u8; 12] {
-    let mut bytes = [0u8; 12];
-    bytes[0] = 0x48;
-    bytes[1] = 0xB8;
-    bytes[2..10].copy_from_slice(&to_address.to_le_bytes());
-    bytes[10] = 0xFF;
-    bytes[11] = 0xE0;
+pub(crate) fn encode_absolute_jump(to_address: u64) -> [u8; 14] {
+    let mut bytes = [0u8; 14];
+    // jmp qword ptr [rip+0]
+    bytes[0] = 0xFF;
+    bytes[1] = 0x25;
+    bytes[2..6].copy_from_slice(&0u32.to_le_bytes());
+    bytes[6..14].copy_from_slice(&to_address.to_le_bytes());
     bytes
 }

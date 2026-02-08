@@ -1,22 +1,8 @@
 #[cfg(target_arch = "aarch64")]
 use crate::constants::{BR_X16, LDR_X16_LITERAL_8};
 use crate::error::SigHookError;
-use crate::memory::last_errno;
-use libc::c_void;
+use crate::memory::{flush_instruction_cache, last_errno};
 use std::ptr::null_mut;
-
-#[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
-unsafe extern "C" {
-    fn sys_icache_invalidate(start: *mut c_void, len: usize);
-}
-
-#[cfg(all(
-    any(target_os = "linux", target_os = "android"),
-    target_arch = "aarch64"
-))]
-unsafe extern "C" {
-    fn __clear_cache(begin: *mut c_void, end: *mut c_void);
-}
 
 pub(crate) fn create_original_trampoline(
     address: u64,
@@ -67,7 +53,7 @@ pub(crate) fn create_original_trampoline(
             std::ptr::write_unaligned((base + 12) as *mut u64, next_pc.to_le());
         }
 
-        flush_icache(memory, 20);
+        flush_instruction_cache(memory, 20);
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -89,13 +75,13 @@ pub(crate) fn create_original_trampoline(
             unsafe {
                 std::ptr::copy_nonoverlapping(rel_jmp.as_ptr(), jmp_site as *mut u8, rel_jmp.len());
             }
-            flush_icache(memory, original_bytes.len() + rel_jmp.len());
+            flush_instruction_cache(memory, original_bytes.len() + rel_jmp.len());
         } else {
             let abs = encode_abs_jmp_indirect(next_pc);
             unsafe {
                 std::ptr::copy_nonoverlapping(abs.as_ptr(), jmp_site as *mut u8, abs.len());
             }
-            flush_icache(memory, original_bytes.len() + abs.len());
+            flush_instruction_cache(memory, original_bytes.len() + abs.len());
         }
     }
 
@@ -121,25 +107,4 @@ fn encode_abs_jmp_indirect(to_address: u64) -> [u8; 14] {
     bytes[5] = 0x00;
     bytes[6..14].copy_from_slice(&to_address.to_le_bytes());
     bytes
-}
-
-fn flush_icache(start: *mut c_void, len: usize) {
-    #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
-    unsafe {
-        sys_icache_invalidate(start, len);
-    }
-
-    #[cfg(all(
-        any(target_os = "linux", target_os = "android"),
-        target_arch = "aarch64"
-    ))]
-    unsafe {
-        let end = (start as usize).wrapping_add(len) as *mut c_void;
-        __clear_cache(start, end);
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    {
-        let _ = (start, len);
-    }
 }
