@@ -1,0 +1,62 @@
+use sighook::patch_asm;
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const ADD_INSN_OFFSET: u64 = 0x14;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const X86_PATCHPOINT_OFFSET: u64 = 0x6;
+
+#[used]
+#[cfg_attr(
+    any(target_os = "macos", target_os = "ios"),
+    unsafe(link_section = "__DATA,__mod_init_func")
+)]
+#[cfg_attr(
+    any(target_os = "linux", target_os = "android"),
+    unsafe(link_section = ".init_array")
+)]
+static INIT_ARRAY: extern "C" fn() = init;
+
+extern "C" fn init() {
+    unsafe {
+        let target_address = {
+            #[cfg(all(
+                any(target_os = "linux", target_os = "android"),
+                target_arch = "aarch64"
+            ))]
+            {
+                let symbol = libc::dlsym(libc::RTLD_DEFAULT, c"calc_add_insn".as_ptr());
+                if symbol.is_null() {
+                    return;
+                }
+                symbol as u64
+            }
+
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                let symbol = libc::dlsym(libc::RTLD_DEFAULT, c"calc".as_ptr());
+                if symbol.is_null() {
+                    return;
+                }
+                symbol as u64 + X86_PATCHPOINT_OFFSET
+            }
+
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                let symbol = libc::dlsym(libc::RTLD_DEFAULT, c"calc".as_ptr());
+                if symbol.is_null() {
+                    return;
+                }
+                symbol as u64 + ADD_INSN_OFFSET
+            }
+        };
+
+        #[cfg(target_arch = "aarch64")]
+        let patch = "mul w0, w8, w9";
+
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let patch = "imul %edx, %eax; nop";
+
+        let _ = patch_asm(target_address, patch);
+    }
+}

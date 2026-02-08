@@ -13,6 +13,8 @@ compile_error!(
     "sighook only supports Apple aarch64 (macOS/iOS), Linux/Android aarch64, and Linux x86_64."
 );
 
+#[cfg(feature = "patch_asm")]
+mod asm;
 mod constants;
 mod context;
 mod error;
@@ -51,6 +53,43 @@ pub use error::SigHookError;
 ))]
 pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
     memory::patch_u32(address, new_opcode)
+}
+
+/// Replaces one machine instruction at `address` from assembly text.
+///
+/// This API assembles `asm` into exactly 4 bytes for the active target,
+/// then writes it through [`patchcode`].
+///
+/// Notes:
+/// - Requires crate feature `patch_asm`.
+/// - On `aarch64`, use ARM64 syntax (e.g. `"mul w0, w8, w9"`).
+/// - On Linux `x86_64`, use GNU/AT&T syntax (e.g. `"imul %edx, %eax"`).
+///
+/// Returns the original 4-byte value previously stored at `address`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "patch_asm")]
+/// # {
+/// use sighook::patch_asm;
+///
+/// let address = 0x7FFF_0000_0000u64;
+/// let old = patch_asm(address, "nop")?;
+/// let _ = old;
+/// # }
+/// # Ok::<(), sighook::SigHookError>(())
+/// ```
+#[cfg(all(
+    feature = "patch_asm",
+    any(
+        target_arch = "aarch64",
+        all(target_os = "linux", target_arch = "x86_64")
+    )
+))]
+pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
+    let opcode = asm::assemble_patch_opcode(address, asm)?;
+    patchcode(address, opcode)
 }
 
 /// Installs an instruction-level hook and executes the original instruction afterward.

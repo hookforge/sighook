@@ -46,6 +46,12 @@ pub enum SigHookError {
     InstrumentSlotsFull,
     BranchOutOfRange,
     DecodeFailed,
+    AsmEmptyInput,
+    AsmAssembleFailed,
+    AsmSizeMismatch {
+        expected: usize,
+        actual: usize,
+    },
     MmapFailed {
         errno: c_int,
     },
@@ -103,6 +109,14 @@ impl fmt::Display for SigHookError {
             SigHookError::InstrumentSlotsFull => write!(f, "instrument slots are full"),
             SigHookError::BranchOutOfRange => write!(f, "branch target out of range"),
             SigHookError::DecodeFailed => write!(f, "instruction decode failed"),
+            SigHookError::AsmEmptyInput => write!(f, "assembly input is empty"),
+            SigHookError::AsmAssembleFailed => write!(f, "assembly to machine code failed"),
+            SigHookError::AsmSizeMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "assembled size mismatch (expected={expected}, actual={actual})"
+                )
+            }
             SigHookError::MmapFailed { errno } => write!(f, "mmap failed (errno={errno})"),
             SigHookError::TrampolineProtectFailed { errno } => {
                 write!(f, "trampoline mprotect failed (errno={errno})")

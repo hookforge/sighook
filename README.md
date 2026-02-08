@@ -15,6 +15,7 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 ## Features
 
 - `patchcode(address, opcode)` for raw instruction patching
+- `patch_asm(address, asm)` for assembling one instruction then patching (feature-gated)
 - `instrument(address, callback)` to trap and then execute original opcode
 - `instrument_no_original(address, callback)` to trap and skip original opcode
 - `inline_hook(addr, replace_fn)` with automatic far-jump fallback
@@ -37,6 +38,15 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 sighook = "0.4.0"
 ```
 
+Enable assembly-string patching support only when needed:
+
+```toml
+[dependencies]
+sighook = { version = "0.4.0", features = ["patch_asm"] }
+```
+
+`patch_asm` pulls `keystone-engine`, which is a heavier dependency.
+
 ## Quick Start
 
 ### 1) BRK instrumentation (execute original opcode)
@@ -50,6 +60,23 @@ extern "C" fn on_hit(_address: u64, ctx: *mut HookContext) {
 
 let target_instruction = 0x1000_0000_u64;
 let _original = instrument(target_instruction, on_hit)?;
+# Ok::<(), sighook::SigHookError>(())
+```
+
+### 0) Patch with asm string (feature `patch_asm`)
+
+```rust,no_run
+# #[cfg(feature = "patch_asm")]
+# {
+use sighook::patch_asm;
+
+let target_instruction = 0x1000_0000_u64;
+#[cfg(target_arch = "aarch64")]
+let _original = patch_asm(target_instruction, "mul w0, w8, w9")?;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+let _original = patch_asm(target_instruction, "imul %edx, %eax; nop")?;
+# }
 # Ok::<(), sighook::SigHookError>(())
 ```
 

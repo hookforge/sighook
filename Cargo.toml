@@ -27,10 +27,20 @@ rustdoc-args = ["--cfg", "docsrs"]
 name = "sighook"
 crate-type = ["rlib", "cdylib"]
 
+[features]
+default = []
+patch_asm = ["dep:keystone-engine"]
+
 [[example]]
 name = "patchcode_add_to_mul"
 path = "examples/patchcode_add_to_mul/main.rs"
 crate-type = ["cdylib"]
+
+[[example]]
+name = "patch_asm_add_to_mul"
+path = "examples/patch_asm_add_to_mul/main.rs"
+crate-type = ["cdylib"]
+required-features = ["patch_asm"]
 
 [[example]]
 name = "instrument_with_original"
@@ -52,3 +62,6 @@ libc = "0.2"
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 iced-x86 = "1.21"
+
+[target.'cfg(any(target_arch = "aarch64", all(target_os = "linux", target_arch = "x86_64")))'.dependencies]
+keystone-engine = { version = "0.1.0", optional = true, default-features = false, features = ["build-from-src"] }

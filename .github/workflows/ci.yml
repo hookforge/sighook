@@ -19,6 +19,11 @@ jobs:
           targets: aarch64-apple-darwin
           components: rustfmt, clippy
 
+      - name: Setup CMake 3.x (keystone build compatibility)
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.31.6'
+
       - name: Cargo fmt
         run: cargo fmt --all -- --check
 
@@ -33,6 +38,9 @@ jobs:
 
       - name: Build all examples (macOS)
         run: cargo build --examples --target aarch64-apple-darwin
+
+      - name: Build patch_asm example (macOS)
+        run: cargo build --example patch_asm_add_to_mul --features patch_asm --target aarch64-apple-darwin
 
       - name: Run macOS example smoke tests
         shell: bash
@@ -63,6 +71,12 @@ jobs:
           echo "$OUT"
           [[ "$OUT" == *"calc(6, 7) = 42"* ]]
 
+          cc -O0 -fno-inline examples/patch_asm_add_to_mul/target.c -o examples/patch_asm_add_to_mul/app
+          DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libpatch_asm_add_to_mul.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/patch_asm_add_to_mul/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(6, 7) = 42"* ]]
+
   rust-linux-x86_64:
     runs-on: ubuntu-24.04
 
@@ -76,6 +90,11 @@ jobs:
           targets: x86_64-unknown-linux-gnu
           components: rustfmt, clippy
 
+      - name: Setup CMake 3.x (keystone build compatibility)
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.31.6'
+
       - name: Cargo check
         run: cargo check --all-targets --target x86_64-unknown-linux-gnu
 
@@ -87,6 +106,9 @@ jobs:
 
       - name: Build all examples (Linux x86_64)
         run: cargo build --examples --target x86_64-unknown-linux-gnu
+
+      - name: Build patch_asm example (Linux x86_64)
+        run: cargo build --example patch_asm_add_to_mul --features patch_asm --target x86_64-unknown-linux-gnu
 
       - name: Run Linux x86_64 example smoke tests
         shell: bash
@@ -117,6 +139,12 @@ jobs:
           echo "$OUT"
           [[ "$OUT" == *"calc(6, 7) = 42"* ]]
 
+          cc -O0 -fno-inline -rdynamic examples/patch_asm_add_to_mul/target.c -o examples/patch_asm_add_to_mul/app
+          SO="$PWD/target/x86_64-unknown-linux-gnu/debug/examples/libpatch_asm_add_to_mul.so"
+          OUT=$(LD_PRELOAD="$SO" examples/patch_asm_add_to_mul/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(6, 7) = 42"* ]]
+
   rust-linux-aarch64:
     runs-on: ubuntu-24.04-arm
 
@@ -130,6 +158,11 @@ jobs:
           targets: aarch64-unknown-linux-gnu
           components: clippy
 
+      - name: Setup CMake 3.x (keystone build compatibility)
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.31.6'
+
       - name: Cargo check
         run: cargo check --all-targets --target aarch64-unknown-linux-gnu
 
@@ -141,6 +174,9 @@ jobs:
 
       - name: Build all examples (Linux aarch64)
         run: cargo build --examples --target aarch64-unknown-linux-gnu
+
+      - name: Build patch_asm example (Linux aarch64)
+        run: cargo build --example patch_asm_add_to_mul --features patch_asm --target aarch64-unknown-linux-gnu
 
       - name: Run Linux aarch64 example smoke tests
         shell: bash
@@ -171,6 +207,12 @@ jobs:
           echo "$OUT"
           [[ "$OUT" == *"calc(6, 7) = 42"* ]]
 
+          cc -O0 -fno-inline -rdynamic examples/patch_asm_add_to_mul/target.c -o examples/patch_asm_add_to_mul/app
+          SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libpatch_asm_add_to_mul.so"
+          OUT=$(LD_PRELOAD="$SO" examples/patch_asm_add_to_mul/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(6, 7) = 42"* ]]
+
   rust-ios-aarch64:
     runs-on: macos-14
 
@@ -184,6 +226,11 @@ jobs:
           targets: aarch64-apple-ios
           components: clippy
 
+      - name: Setup CMake 3.x (keystone build compatibility)
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.31.6'
+
       - name: Cargo check
         run: cargo check --all-targets --target aarch64-apple-ios
 
@@ -195,6 +242,9 @@ jobs:
 
       - name: Build all examples (iOS aarch64)
         run: cargo build --examples --target aarch64-apple-ios
+
+      - name: Build patch_asm example (iOS aarch64)
+        run: cargo build --example patch_asm_add_to_mul --features patch_asm --target aarch64-apple-ios
 
   rust-android-aarch64:
     runs-on: ubuntu-24.04
@@ -208,6 +258,11 @@ jobs:
         with:
           targets: aarch64-linux-android
           components: clippy
+
+      - name: Setup CMake 3.x (keystone build compatibility)
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.31.6'
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -231,3 +286,6 @@ jobs:
 
       - name: Build all examples (Android aarch64)
         run: cargo build --examples --target aarch64-linux-android
+
+      - name: Build patch_asm example (Android aarch64)
+        run: cargo build --example patch_asm_add_to_mul --features patch_asm --target aarch64-linux-android
