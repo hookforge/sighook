@@ -10,7 +10,7 @@ const X86_PATCHPOINT_OFFSET: u64 = 0x6;
 const PATCH_ADD_TO_MUL_OPCODE: u32 = 0x1B09_7D00;
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-const PATCH_ADD_TO_MUL_OPCODE: u32 = 0x90C2_AF0F;
+const PATCH_ADD_TO_MUL_OPCODE: u32 = 0x90_90_EA_F7;
 
 #[used]
 #[cfg_attr(

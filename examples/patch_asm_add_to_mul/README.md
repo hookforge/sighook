@@ -3,7 +3,7 @@
 Demonstrates `sighook::patch_asm` by assembling and patching one instruction in `calc`.
 
 - AArch64 patch string: `mul w0, w8, w9`
-- Linux x86_64 patch string: `imul %edx, %eax; nop`
+- Linux x86_64 patch string: `imul %edx`
 
 ## Build
 

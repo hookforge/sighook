@@ -55,7 +55,7 @@ extern "C" fn init() {
         let patch = "mul w0, w8, w9";
 
         #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-        let patch = "imul %edx, %eax; nop";
+        let patch = "imul %edx";
 
         let _ = patch_asm(target_address, patch);
     }

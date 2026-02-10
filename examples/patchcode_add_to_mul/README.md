@@ -3,7 +3,7 @@
 Demonstrates `sighook::patchcode` by replacing one instruction in `calc`.
 
 - `aarch64`: `add w0, w8, w9` -> `mul w0, w8, w9`
-- `linux x86_64`: `add eax, edx` (+ nops) -> `imul eax, edx` (+ nop)
+- `linux x86_64`: `add eax, edx` (+ nops) -> `imul edx` (2-byte one-operand form; result in `eax`)
 
 ## Run (from repository root)
 

@@ -84,7 +84,7 @@ let target_instruction = 0x1000_0000_u64;
 let _original = patch_asm(target_instruction, "mul w0, w8, w9")?;
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-let _original = patch_asm(target_instruction, "imul %edx, %eax; nop")?;
+let _original = patch_asm(target_instruction, "imul %edx")?;
 # }
 # Ok::<(), sighook::SigHookError>(())
 ```
