@@ -110,6 +110,16 @@ pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
 /// If the callback does not redirect control flow (`pc`/`rip` unchanged),
 /// the original instruction runs through an internal trampoline, then execution continues.
 ///
+/// # AArch64 note
+///
+/// On `aarch64`, this API does **not** support patch points whose original instruction
+/// is PC-relative (for example: `adr`, `adrp`, and other PC-relative forms).
+/// Those instructions may observe a different `pc` when replayed by the trampoline,
+/// which can produce incorrect behavior.
+///
+/// For such patch points, prefer [`instrument_no_original`], and implement the original
+/// instruction semantics manually in your callback before returning.
+///
 /// Returns the original 4-byte value previously stored at `address`.
 ///
 /// # Example

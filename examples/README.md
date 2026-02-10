@@ -29,6 +29,7 @@ Available examples:
 - `patch_asm_add_to_mul` (requires `patch_asm`): assemble one instruction from string and patch
 - `instrument_with_original`: BRK instrumentation + execute original opcode
 - `instrument_no_original`: BRK instrumentation + skip original opcode
+- `instrument_adrp_no_original`: aarch64 `adrp` patch-point via `instrument_no_original` + manual callback emulation
 - `inline_hook_far`: function-entry detour with inline hook
 
 ## Coverage matrix
@@ -36,13 +37,14 @@ Available examples:
 - `aarch64-apple-darwin`: `patchcode` / `instrument` / `instrument_no_original` / `inline_hook`
 - `aarch64-apple-darwin`: plus optional `patch_asm` smoke (`--features patch_asm`)
 - `x86_64-apple-darwin`: compile coverage for all 4 examples, plus optional `patch_asm` build
-- `aarch64-unknown-linux-gnu`: runtime smoke coverage for all 4 examples (CI)
+- `aarch64-unknown-linux-gnu`: runtime smoke coverage for all 5 core examples (CI, includes `instrument_adrp_no_original`)
 - `aarch64-unknown-linux-gnu`: plus optional `patch_asm` smoke (`--features patch_asm`)
-- `x86_64-unknown-linux-gnu`: runtime smoke coverage for all 4 examples (CI), plus optional `patch_asm` smoke (`--features patch_asm`)
+- `x86_64-unknown-linux-gnu`: runtime smoke coverage for 4 base examples (CI), plus optional `patch_asm` smoke (`--features patch_asm`)
 
 ## Notes by architecture
 
-- On `aarch64-unknown-linux-gnu`, `calc` examples expose a dedicated `calc_add_insn` symbol and resolve patch point by symbol (no fixed offset dependency).
+- On `aarch64-unknown-linux-gnu`, `calc` examples expose dedicated patchpoint symbols (`calc_add_insn` and `calc_adrp_insn`) and resolve patch points by symbol (no fixed offset dependency).
+- `instrument_adrp_no_original` demonstrates `adrp` interception via `instrument_no_original` and manual callback emulation.
 - On `aarch64-apple-darwin`, `calc` examples keep fixed `ADD_INSN_OFFSET=0x14` for the naked function layout.
 - On `x86_64-unknown-linux-gnu`, `calc` examples use fixed offsets in dedicated assembly stubs (`instrument*`: `+0x4`, `patchcode_add_to_mul`: `+0x6`). `patchcode_add_to_mul` patches `add eax, edx; nop; nop` into `imul eax, edx; nop`.
 - `patch_asm_add_to_mul` uses equivalent patches via assembly text (`aarch64`: `mul w0, w8, w9`; `x86_64`: `imul %edx, %eax; nop`).

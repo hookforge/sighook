@@ -54,6 +54,11 @@ path = "examples/instrument_no_original/main.rs"
 crate-type = ["cdylib"]
 
 [[example]]
+name = "instrument_adrp_no_original"
+path = "examples/instrument_adrp_no_original/main.rs"
+crate-type = ["cdylib"]
+
+[[example]]
 name = "inline_hook_far"
 path = "examples/inline_hook_far/main.rs"
 crate-type = ["cdylib"]
