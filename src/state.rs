@@ -32,6 +32,25 @@ pub(crate) static mut HANDLERS_INSTALLED: bool = false;
 pub(crate) static mut SLOTS: [InstrumentSlot; MAX_INSTRUMENTS] =
     [InstrumentSlot::EMPTY; MAX_INSTRUMENTS];
 
+#[derive(Copy, Clone)]
+pub(crate) struct OriginalOpcodeSlot {
+    pub used: bool,
+    pub address: u64,
+    pub opcode: u32,
+}
+
+impl OriginalOpcodeSlot {
+    pub const EMPTY: Self = Self {
+        used: false,
+        address: 0,
+        opcode: 0,
+    };
+}
+
+pub(crate) static mut ORIGINAL_OPCODE_SLOTS: [OriginalOpcodeSlot; MAX_INSTRUMENTS] =
+    [OriginalOpcodeSlot::EMPTY; MAX_INSTRUMENTS];
+pub(crate) static mut ORIGINAL_OPCODE_REPLACE_INDEX: usize = 0;
+
 pub(crate) unsafe fn find_slot_index(address: u64) -> Option<usize> {
     let mut index = 0;
     while index < MAX_INSTRUMENTS {
@@ -133,4 +152,57 @@ pub(crate) unsafe fn original_opcode_by_address(address: u64) -> Option<u32> {
 pub(crate) unsafe fn original_bytes_by_address(address: u64) -> Option<([u8; 16], u8)> {
     let slot = unsafe { slot_by_address(address) }?;
     Some((slot.original_bytes, slot.original_len))
+}
+
+unsafe fn find_original_opcode_slot_index(address: u64) -> Option<usize> {
+    let mut index = 0;
+    while index < MAX_INSTRUMENTS {
+        let slot = unsafe { ORIGINAL_OPCODE_SLOTS[index] };
+        if slot.used && slot.address == address {
+            return Some(index);
+        }
+        index += 1;
+    }
+
+    None
+}
+
+pub(crate) unsafe fn cache_original_opcode(address: u64, opcode: u32) {
+    if let Some(index) = unsafe { find_original_opcode_slot_index(address) } {
+        unsafe {
+            ORIGINAL_OPCODE_SLOTS[index].opcode = opcode;
+        }
+        return;
+    }
+
+    let mut index = 0;
+    while index < MAX_INSTRUMENTS {
+        if !(unsafe { ORIGINAL_OPCODE_SLOTS[index].used }) {
+            unsafe {
+                ORIGINAL_OPCODE_SLOTS[index] = OriginalOpcodeSlot {
+                    used: true,
+                    address,
+                    opcode,
+                };
+            }
+            return;
+        }
+
+        index += 1;
+    }
+
+    let replace_index = unsafe { ORIGINAL_OPCODE_REPLACE_INDEX % MAX_INSTRUMENTS };
+    unsafe {
+        ORIGINAL_OPCODE_SLOTS[replace_index] = OriginalOpcodeSlot {
+            used: true,
+            address,
+            opcode,
+        };
+        ORIGINAL_OPCODE_REPLACE_INDEX = (replace_index + 1) % MAX_INSTRUMENTS;
+    }
+}
+
+pub(crate) unsafe fn cached_original_opcode_by_address(address: u64) -> Option<u32> {
+    let index = unsafe { find_original_opcode_slot_index(address) }?;
+    Some(unsafe { ORIGINAL_OPCODE_SLOTS[index].opcode })
 }

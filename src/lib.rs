@@ -61,7 +61,11 @@ pub use error::SigHookError;
     all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos"))
 ))]
 pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
-    memory::patch_u32(address, new_opcode)
+    let original = memory::patch_u32(address, new_opcode)?;
+    unsafe {
+        state::cache_original_opcode(address, original);
+    }
+    Ok(original)
 }
 
 /// Replaces one machine instruction at `address` from assembly text.
@@ -201,14 +205,41 @@ fn instrument_internal(
             original_bytes
         };
 
-        state::register_slot(
+        let register_result = state::register_slot(
             address,
             &original_bytes,
             step_len,
             callback,
             execute_original,
-        )?;
-        state::original_opcode_by_address(address).ok_or(SigHookError::InvalidAddress)
+        );
+
+        if let Err(err) = register_result {
+            #[cfg(target_arch = "aarch64")]
+            {
+                let mut bytes = [0u8; 4];
+                bytes.copy_from_slice(&original_bytes[..4]);
+                let original_opcode = u32::from_le_bytes(bytes);
+                let _ = memory::patch_u32(address, original_opcode);
+            }
+
+            #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+            {
+                let _ = memory::patch_bytes_public(address, &original_bytes);
+            }
+
+            return Err(err);
+        }
+
+        if original_bytes.len() < 4 {
+            return Err(SigHookError::InvalidAddress);
+        }
+
+        let mut bytes = [0u8; 4];
+        bytes.copy_from_slice(&original_bytes[..4]);
+        let original_opcode = u32::from_le_bytes(bytes);
+        state::cache_original_opcode(address, original_opcode);
+
+        Ok(original_opcode)
     }
 }
 
@@ -238,7 +269,13 @@ pub fn inline_hook(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
     {
         match memory::encode_b(addr, replace_fn) {
             Ok(b_opcode) => patchcode(addr, b_opcode),
-            Err(SigHookError::BranchOutOfRange) => memory::patch_far_jump(addr, replace_fn),
+            Err(SigHookError::BranchOutOfRange) => {
+                let original = memory::patch_far_jump(addr, replace_fn)?;
+                unsafe {
+                    state::cache_original_opcode(addr, original);
+                }
+                Ok(original)
+            }
             Err(err) => Err(err),
         }
     }
@@ -250,7 +287,11 @@ pub fn inline_hook(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
             let mut opcode = [0u8; 4];
             if original.len() >= 4 {
                 opcode.copy_from_slice(&original[..4]);
-                return Ok(u32::from_le_bytes(opcode));
+                let original_opcode = u32::from_le_bytes(opcode);
+                unsafe {
+                    state::cache_original_opcode(addr, original_opcode);
+                }
+                return Ok(original_opcode);
             }
             return Err(SigHookError::InvalidAddress);
         }
@@ -260,7 +301,11 @@ pub fn inline_hook(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
         let mut opcode = [0u8; 4];
         if original.len() >= 4 {
             opcode.copy_from_slice(&original[..4]);
-            return Ok(u32::from_le_bytes(opcode));
+            let original_opcode = u32::from_le_bytes(opcode);
+            unsafe {
+                state::cache_original_opcode(addr, original_opcode);
+            }
+            return Ok(original_opcode);
         }
         Err(SigHookError::InvalidAddress)
     }
@@ -285,5 +330,8 @@ pub fn inline_hook(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
 /// # Ok::<(), sighook::SigHookError>(())
 /// ```
 pub fn original_opcode(address: u64) -> Option<u32> {
-    unsafe { state::original_opcode_by_address(address) }
+    unsafe {
+        state::cached_original_opcode_by_address(address)
+            .or_else(|| state::original_opcode_by_address(address))
+    }
 }
