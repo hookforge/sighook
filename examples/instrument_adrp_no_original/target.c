@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-volatile int g_magic = 30;
+volatile int g_magic[2] = {0, 30};
 
 #if defined(__linux__) && defined(__aarch64__)
 int calc(int a, int b);
@@ -16,7 +16,7 @@ __asm__(
     "calc_adrp_insn:\n"
     "  adrp x10, g_magic\n"
     "  add x10, x10, :lo12:g_magic\n"
-    "  ldr w10, [x10]\n"
+    "  ldr w10, [x10, #4]\n"
     "  add w0, w8, w9\n"
     "  add w0, w0, w10\n"
     "  ret\n"
@@ -24,7 +24,7 @@ __asm__(
 #else
 __attribute__((noinline))
 int calc(int a, int b) {
-    return a + b + g_magic;
+    return a + b + g_magic[1];
 }
 #endif
 

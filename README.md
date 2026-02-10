@@ -180,7 +180,8 @@ For AArch64 Linux examples, `calc`-based demos export a dedicated `calc_add_insn
 ## API Notes
 
 - `instrument(...)` executes original instruction through an internal trampoline.
-- `instrument_no_original(...)` skips original instruction unless callback changes control-flow register (`pc`/`rip`).
+- `instrument(...)` should not be used for PC-relative patch points (for example: `aarch64` `adr`/`adrp`, or `x86_64` RIP-relative `lea`/`mov`).
+- `instrument_no_original(...)` skips original instruction unless callback changes control-flow register (`pc`/`rip`). For PC-relative patch points, prefer this API and emulate the instruction in callback.
 - `inline_hook(...)` uses architecture-specific near jump first, then far-jump fallback.
 
 ## Safety Notes
