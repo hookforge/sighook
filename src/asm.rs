@@ -17,15 +17,20 @@ use keystone_engine::{Arch, Keystone, KeystoneError, Mode, OptionType, OptionVal
 
 use crate::error::SigHookError;
 
+#[cfg(all(
+    feature = "patch_asm",
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64")
+    )
+))]
 const PATCH_ASM_WIDTH: usize = 4;
 
 #[cfg(all(
     feature = "patch_asm",
     any(
         all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64")
+        all(target_os = "linux", target_arch = "aarch64")
     )
 ))]
 pub(crate) fn assemble_patch_opcode(address: u64, asm: &str) -> Result<u32, SigHookError> {
@@ -125,6 +130,13 @@ fn map_keystone_error(_err: KeystoneError) -> SigHookError {
     SigHookError::AsmAssembleFailed
 }
 
+#[cfg(all(
+    feature = "patch_asm",
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64")
+    )
+))]
 fn to_u32_opcode(bytes: Vec<u8>) -> Result<u32, SigHookError> {
     if bytes.len() != PATCH_ASM_WIDTH {
         return Err(SigHookError::AsmSizeMismatch {

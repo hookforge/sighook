@@ -123,7 +123,7 @@ fn effective_x86_patch_len(opcode_bytes: &[u8; 4]) -> usize {
 /// Notes:
 /// - Requires crate feature `patch_asm`.
 /// - On `aarch64`, use ARM64 syntax (e.g. `"mul w0, w8, w9"`).
-/// - On Linux `x86_64`, use GNU/AT&T syntax (e.g. `"imul %edx, %eax"`).
+/// - On Linux `x86_64`, use GNU/AT&T syntax (e.g. `"imul %edx"`).
 /// - On `x86_64`, if assembled bytes are shorter than the decoded current instruction,
 ///   the trailing bytes are padded with `NOP`; if longer, returns
 ///   [`SigHookError::PatchTooLong`] and you should use [`patch_bytes`].
