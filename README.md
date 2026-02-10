@@ -3,7 +3,7 @@
 [![crates.io](https://img.shields.io/crates/v/sighook.svg)](https://crates.io/crates/sighook)
 [![docs.rs](https://docs.rs/sighook/badge.svg)](https://docs.rs/sighook)
 [![CI](https://github.com/YinMo19/sighook/actions/workflows/ci.yml/badge.svg)](https://github.com/YinMo19/sighook/actions/workflows/ci.yml)
-[![license](https://img.shields.io/crates/l/sighook.svg)](https://spdx.org/licenses/GPL-2.0-only.html)
+[![license](https://img.shields.io/crates/l/sighook.svg)](https://spdx.org/licenses/LGPL-2.1-only.html)
 
 `Sighook` is a runtime patching crate focused on:
 
@@ -14,8 +14,9 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 
 ## Features
 
-- `patchcode(address, opcode)` for raw instruction patching
-- `patch_asm(address, asm)` for assembling one instruction then patching (feature-gated)
+- `patchcode(address, opcode)` for instruction patching (x86_64 pads remaining bytes with NOPs when patch is shorter than current instruction)
+- `patch_bytes(address, bytes)` for multi-byte/raw patching
+- `patch_asm(address, asm)` for assembling then patching (feature-gated; x86_64 pads with NOPs when assembled bytes are shorter than current instruction)
 - `instrument(address, callback)` to trap and then execute original opcode
 - `instrument_no_original(address, callback)` to trap and skip original opcode
 - `inline_hook(addr, replace_fn)` with automatic far-jump fallback
@@ -43,14 +44,14 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 
 ```toml
 [dependencies]
-sighook = "0.6.2"
+sighook = "0.7.0"
 ```
 
 Enable assembly-string patching support only when needed:
 
 ```toml
 [dependencies]
-sighook = { version = "0.6.2", features = ["patch_asm"] }
+sighook = { version = "0.7.0", features = ["patch_asm"] }
 ```
 
 `patch_asm` pulls `keystone-engine`, which is a heavier dependency.
@@ -194,4 +195,4 @@ This crate performs runtime code patching and raw context mutation.
 
 ## License
 
-GPL-2.0-only
+LGPL-2.1-only

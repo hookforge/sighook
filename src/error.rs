@@ -55,6 +55,10 @@ pub enum SigHookError {
     },
     InstrumentSlotsFull,
     BranchOutOfRange,
+    PatchTooLong {
+        patch_len: usize,
+        instruction_len: usize,
+    },
     DecodeFailed,
     AsmEmptyInput,
     AsmAssembleFailed,
@@ -132,6 +136,15 @@ impl fmt::Display for SigHookError {
             }
             SigHookError::InstrumentSlotsFull => write!(f, "instrument slots are full"),
             SigHookError::BranchOutOfRange => write!(f, "branch target out of range"),
+            SigHookError::PatchTooLong {
+                patch_len,
+                instruction_len,
+            } => {
+                write!(
+                    f,
+                    "patch length ({patch_len}) exceeds instruction length ({instruction_len}); use patch_bytes for multi-instruction patching"
+                )
+            }
             SigHookError::DecodeFailed => write!(f, "instruction decode failed"),
             SigHookError::AsmEmptyInput => write!(f, "assembly input is empty"),
             SigHookError::AsmAssembleFailed => write!(f, "assembly to machine code failed"),

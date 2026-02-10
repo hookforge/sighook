@@ -267,8 +267,8 @@ pub(crate) fn read_bytes(address: u64, len: usize) -> Result<Vec<u8>, SigHookErr
     Ok(out)
 }
 
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn patch_u32(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
-    #[cfg(target_arch = "aarch64")]
     if (address & 0b11) != 0 {
         return Err(SigHookError::InvalidAddress);
     }
@@ -279,7 +279,6 @@ pub(crate) fn patch_u32(address: u64, new_opcode: u32) -> Result<u32, SigHookErr
     Ok(u32::from_le_bytes(opcode_bytes))
 }
 
-#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn patch_bytes_public(address: u64, bytes: &[u8]) -> Result<Vec<u8>, SigHookError> {
     patch_bytes(address, bytes)
 }

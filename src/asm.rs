@@ -29,6 +29,20 @@ const PATCH_ASM_WIDTH: usize = 4;
     )
 ))]
 pub(crate) fn assemble_patch_opcode(address: u64, asm: &str) -> Result<u32, SigHookError> {
+    let bytes = assemble_bytes(address, asm)?;
+    to_u32_opcode(bytes)
+}
+
+#[cfg(all(
+    feature = "patch_asm",
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )
+))]
+pub(crate) fn assemble_bytes(address: u64, asm: &str) -> Result<Vec<u8>, SigHookError> {
     let trimmed = asm.trim();
     if trimmed.is_empty() {
         return Err(SigHookError::AsmEmptyInput);
@@ -37,7 +51,7 @@ pub(crate) fn assemble_patch_opcode(address: u64, asm: &str) -> Result<u32, SigH
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     {
         let bytes = assemble_x86_64(trimmed, address)?;
-        return to_u32_opcode(bytes);
+        return Ok(bytes);
     }
 
     #[cfg(any(
@@ -46,7 +60,7 @@ pub(crate) fn assemble_patch_opcode(address: u64, asm: &str) -> Result<u32, SigH
     ))]
     {
         let bytes = assemble_aarch64(trimmed, address)?;
-        return to_u32_opcode(bytes);
+        return Ok(bytes);
     }
 
     #[allow(unreachable_code)]

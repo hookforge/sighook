@@ -44,7 +44,11 @@ pub use error::SigHookError;
 /// Use this API when you already know the exact opcode encoding for your target architecture.
 ///
 /// - On `aarch64`, `new_opcode` is a 32-bit ARM instruction word.
-/// - On Linux `x86_64`, `new_opcode` is written as 4 little-endian bytes.
+/// - On `x86_64`, `new_opcode` is written as 4 little-endian bytes.
+///   If the decoded current instruction is longer than 4 bytes, the remaining
+///   bytes are filled with `NOP`.
+///   If the decoded instruction is shorter than 4 bytes, returns [`SigHookError::PatchTooLong`]
+///   and you should use [`patch_bytes`] instead.
 ///
 /// # Example
 ///
@@ -61,10 +65,38 @@ pub use error::SigHookError;
     all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos"))
 ))]
 pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    {
+        let instruction_len = memory::instruction_width(address)? as usize;
+        let patch_len = 4usize;
+        if patch_len > instruction_len {
+            return Err(SigHookError::PatchTooLong {
+                patch_len,
+                instruction_len,
+            });
+        }
+
+        let mut patch = vec![0x90u8; instruction_len];
+        patch[..4].copy_from_slice(&new_opcode.to_le_bytes());
+        let original = memory::patch_bytes_public(address, &patch)?;
+        let mut opcode = [0u8; 4];
+        opcode.copy_from_slice(&original[..4]);
+        let original_opcode = u32::from_le_bytes(opcode);
+        unsafe {
+            state::cache_original_opcode(address, original_opcode);
+        }
+        Ok(original_opcode)
+    }
+
+    #[cfg(target_arch = "aarch64")]
     let original = memory::patch_u32(address, new_opcode)?;
+
+    #[cfg(target_arch = "aarch64")]
     unsafe {
         state::cache_original_opcode(address, original);
     }
+
+    #[cfg(target_arch = "aarch64")]
     Ok(original)
 }
 
@@ -77,6 +109,9 @@ pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
 /// - Requires crate feature `patch_asm`.
 /// - On `aarch64`, use ARM64 syntax (e.g. `"mul w0, w8, w9"`).
 /// - On Linux `x86_64`, use GNU/AT&T syntax (e.g. `"imul %edx, %eax"`).
+/// - On `x86_64`, if assembled bytes are shorter than the decoded current instruction,
+///   the trailing bytes are padded with `NOP`; if longer, returns
+///   [`SigHookError::PatchTooLong`] and you should use [`patch_bytes`].
 ///
 /// Returns the original 4-byte value previously stored at `address`.
 ///
@@ -103,8 +138,41 @@ pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
     )
 ))]
 pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
-    let opcode = asm::assemble_patch_opcode(address, asm)?;
-    patchcode(address, opcode)
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    {
+        use crate::asm::assemble_bytes;
+
+        let mut patch = assemble_bytes(address, asm)?;
+        let instruction_len = memory::instruction_width(address)? as usize;
+        if patch.len() > instruction_len {
+            return Err(SigHookError::PatchTooLong {
+                patch_len: patch.len(),
+                instruction_len,
+            });
+        }
+
+        patch.resize(instruction_len, 0x90);
+        let original = memory::patch_bytes_public(address, &patch)?;
+        let mut opcode = [0u8; 4];
+        if original.len() < 4 {
+            return Err(SigHookError::InvalidAddress);
+        }
+        opcode.copy_from_slice(&original[..4]);
+        let original_opcode = u32::from_le_bytes(opcode);
+        unsafe {
+            state::cache_original_opcode(address, original_opcode);
+        }
+        return Ok(original_opcode);
+    }
+
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64")
+    ))]
+    {
+        let opcode = asm::assemble_patch_opcode(address, asm)?;
+        patchcode(address, opcode)
+    }
 }
 
 /// Installs an instruction-level hook and executes the original instruction afterward.
@@ -334,4 +402,32 @@ pub fn original_opcode(address: u64) -> Option<u32> {
         state::cached_original_opcode_by_address(address)
             .or_else(|| state::original_opcode_by_address(address))
     }
+}
+
+/// Writes raw bytes to `address` and returns the overwritten bytes with the same length.
+///
+/// Use this API when you need to patch more than one instruction or when your patch
+/// length exceeds the current instruction length.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use sighook::patch_bytes;
+///
+/// let address = 0x7FFF_0000_0000u64;
+/// let original = patch_bytes(address, &[0x90, 0x90, 0x90, 0x90])?;
+/// let _ = original;
+/// # Ok::<(), sighook::SigHookError>(())
+/// ```
+pub fn patch_bytes(address: u64, bytes: &[u8]) -> Result<Vec<u8>, SigHookError> {
+    let original = memory::patch_bytes_public(address, bytes)?;
+    if original.len() >= 4 {
+        let mut opcode = [0u8; 4];
+        opcode.copy_from_slice(&original[..4]);
+        let original_opcode = u32::from_le_bytes(opcode);
+        unsafe {
+            state::cache_original_opcode(address, original_opcode);
+        }
+    }
+    Ok(original)
 }
