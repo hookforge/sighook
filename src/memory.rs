@@ -1,7 +1,7 @@
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use crate::constants::VM_PROT_COPY;
 #[cfg(target_arch = "aarch64")]
-use crate::constants::{BR_X16, BRK_MASK, BRK_OPCODE, LDR_X16_LITERAL_8};
+use crate::constants::{BRK_MASK, BRK_OPCODE};
 use crate::error::SigHookError;
 use libc::{c_int, c_void};
 
@@ -254,7 +254,6 @@ pub(crate) fn patch_u8(address: u64, new_opcode: u8) -> Result<u8, SigHookError>
     Ok(original[0])
 }
 
-#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn read_bytes(address: u64, len: usize) -> Result<Vec<u8>, SigHookError> {
     if address == 0 || len == 0 {
         return Err(SigHookError::InvalidAddress);
@@ -324,23 +323,6 @@ pub(crate) fn encode_b(from_address: u64, to_address: u64) -> Result<u32, SigHoo
 
     let imm26_bits = (imm26 as i64 as u32) & 0x03FF_FFFF;
     Ok(0x1400_0000 | imm26_bits)
-}
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn patch_far_jump(from_address: u64, to_address: u64) -> Result<u32, SigHookError> {
-    if (from_address & 0b11) != 0 {
-        return Err(SigHookError::InvalidAddress);
-    }
-
-    let mut bytes = [0u8; 16];
-    bytes[0..4].copy_from_slice(&LDR_X16_LITERAL_8.to_le_bytes());
-    bytes[4..8].copy_from_slice(&BR_X16.to_le_bytes());
-    bytes[8..16].copy_from_slice(&to_address.to_le_bytes());
-
-    let original = patch_bytes(from_address, &bytes)?;
-    let mut opcode_bytes = [0u8; 4];
-    opcode_bytes.copy_from_slice(&original[0..4]);
-    Ok(u32::from_le_bytes(opcode_bytes))
 }
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]

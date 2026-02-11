@@ -4,6 +4,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigHookError {
     InvalidAddress,
+    HookNotFound,
     UnsupportedPlatform,
     UnsupportedArchitecture,
     UnsupportedOperation,
@@ -78,6 +79,7 @@ impl fmt::Display for SigHookError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             SigHookError::InvalidAddress => write!(f, "invalid address"),
+            SigHookError::HookNotFound => write!(f, "hook not found at address"),
             SigHookError::UnsupportedPlatform => write!(f, "unsupported platform"),
             SigHookError::UnsupportedArchitecture => write!(f, "unsupported architecture"),
             SigHookError::UnsupportedOperation => write!(f, "unsupported operation"),

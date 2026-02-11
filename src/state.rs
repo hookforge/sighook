@@ -33,6 +33,26 @@ pub(crate) static mut SLOTS: [InstrumentSlot; MAX_INSTRUMENTS] =
     [InstrumentSlot::EMPTY; MAX_INSTRUMENTS];
 
 #[derive(Copy, Clone)]
+pub(crate) struct InlinePatchSlot {
+    pub used: bool,
+    pub address: u64,
+    pub original_bytes: [u8; 16],
+    pub original_len: u8,
+}
+
+impl InlinePatchSlot {
+    pub const EMPTY: Self = Self {
+        used: false,
+        address: 0,
+        original_bytes: [0u8; 16],
+        original_len: 0,
+    };
+}
+
+pub(crate) static mut INLINE_PATCH_SLOTS: [InlinePatchSlot; MAX_INSTRUMENTS] =
+    [InlinePatchSlot::EMPTY; MAX_INSTRUMENTS];
+
+#[derive(Copy, Clone)]
 pub(crate) struct OriginalOpcodeSlot {
     pub used: bool,
     pub address: u64,
@@ -66,6 +86,15 @@ pub(crate) unsafe fn find_slot_index(address: u64) -> Option<usize> {
 pub(crate) unsafe fn slot_by_address(address: u64) -> Option<InstrumentSlot> {
     let index = unsafe { find_slot_index(address) }?;
     Some(unsafe { SLOTS[index] })
+}
+
+pub(crate) unsafe fn remove_slot(address: u64) -> Option<InstrumentSlot> {
+    let index = unsafe { find_slot_index(address) }?;
+    let slot = unsafe { SLOTS[index] };
+    unsafe {
+        SLOTS[index] = InstrumentSlot::EMPTY;
+    }
+    Some(slot)
 }
 
 pub(crate) unsafe fn register_slot(
@@ -154,6 +183,71 @@ pub(crate) unsafe fn original_bytes_by_address(address: u64) -> Option<([u8; 16]
     Some((slot.original_bytes, slot.original_len))
 }
 
+unsafe fn find_inline_patch_slot_index(address: u64) -> Option<usize> {
+    let mut index = 0;
+    while index < MAX_INSTRUMENTS {
+        let slot = unsafe { INLINE_PATCH_SLOTS[index] };
+        if slot.used && slot.address == address {
+            return Some(index);
+        }
+        index += 1;
+    }
+    None
+}
+
+pub(crate) unsafe fn cache_inline_patch(
+    address: u64,
+    original_bytes: &[u8],
+) -> Result<bool, SigHookError> {
+    if original_bytes.is_empty() || original_bytes.len() > 16 {
+        return Err(SigHookError::InvalidAddress);
+    }
+
+    if unsafe { find_inline_patch_slot_index(address) }.is_some() {
+        return Ok(false);
+    }
+
+    let mut stored_bytes = [0u8; 16];
+    stored_bytes[..original_bytes.len()].copy_from_slice(original_bytes);
+
+    let mut index = 0;
+    while index < MAX_INSTRUMENTS {
+        if !(unsafe { INLINE_PATCH_SLOTS[index].used }) {
+            unsafe {
+                INLINE_PATCH_SLOTS[index] = InlinePatchSlot {
+                    used: true,
+                    address,
+                    original_bytes: stored_bytes,
+                    original_len: original_bytes.len() as u8,
+                };
+            }
+            return Ok(true);
+        }
+        index += 1;
+    }
+
+    Err(SigHookError::InstrumentSlotsFull)
+}
+
+pub(crate) unsafe fn inline_patch_by_address(address: u64) -> Option<([u8; 16], u8)> {
+    let index = unsafe { find_inline_patch_slot_index(address) }?;
+    let slot = unsafe { INLINE_PATCH_SLOTS[index] };
+    Some((slot.original_bytes, slot.original_len))
+}
+
+pub(crate) unsafe fn remove_inline_patch(address: u64) -> bool {
+    let index = match unsafe { find_inline_patch_slot_index(address) } {
+        Some(index) => index,
+        None => return false,
+    };
+
+    unsafe {
+        INLINE_PATCH_SLOTS[index] = InlinePatchSlot::EMPTY;
+    }
+
+    true
+}
+
 unsafe fn find_original_opcode_slot_index(address: u64) -> Option<usize> {
     let mut index = 0;
     while index < MAX_INSTRUMENTS {
@@ -205,4 +299,17 @@ pub(crate) unsafe fn cache_original_opcode(address: u64, opcode: u32) {
 pub(crate) unsafe fn cached_original_opcode_by_address(address: u64) -> Option<u32> {
     let index = unsafe { find_original_opcode_slot_index(address) }?;
     Some(unsafe { ORIGINAL_OPCODE_SLOTS[index].opcode })
+}
+
+pub(crate) unsafe fn remove_cached_original_opcode(address: u64) -> bool {
+    let index = match unsafe { find_original_opcode_slot_index(address) } {
+        Some(index) => index,
+        None => return false,
+    };
+
+    unsafe {
+        ORIGINAL_OPCODE_SLOTS[index] = OriginalOpcodeSlot::EMPTY;
+    }
+
+    true
 }

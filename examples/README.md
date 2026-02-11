@@ -29,6 +29,7 @@ Available examples:
 - `patch_asm_add_to_mul` (requires `patch_asm`): assemble one instruction from string and patch
 - `instrument_with_original`: BRK instrumentation + execute original opcode
 - `instrument_no_original`: BRK instrumentation + skip original opcode
+- `instrument_unhook_restore`: install instruction hook, then unhook and verify original behavior
 - `instrument_adrp_no_original`: aarch64 `adrp` patch-point via `instrument_no_original` + manual callback emulation
 - `inline_hook_far`: function-entry detour with inline hook
 
@@ -37,9 +38,9 @@ Available examples:
 - `aarch64-apple-darwin`: `patchcode` / `instrument` / `instrument_no_original` / `inline_hook`
 - `aarch64-apple-darwin`: plus optional `patch_asm` smoke (`--features patch_asm`)
 - `x86_64-apple-darwin`: compile coverage for all 4 examples, plus optional `patch_asm` build
-- `aarch64-unknown-linux-gnu`: runtime smoke coverage for all 5 core examples (CI, includes `instrument_adrp_no_original`)
+- `aarch64-unknown-linux-gnu`: runtime smoke coverage for all 6 core examples (CI, includes `instrument_adrp_no_original`)
 - `aarch64-unknown-linux-gnu`: plus optional `patch_asm` smoke (`--features patch_asm`)
-- `x86_64-unknown-linux-gnu`: runtime smoke coverage for 4 base examples (CI), plus optional `patch_asm` smoke (`--features patch_asm`)
+- `x86_64-unknown-linux-gnu`: runtime smoke coverage for 5 base examples (CI), plus optional `patch_asm` smoke (`--features patch_asm`)
 
 ## Notes by architecture
 

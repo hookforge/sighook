@@ -20,6 +20,7 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 - `instrument(address, callback)` to trap and then execute original opcode
 - `instrument_no_original(address, callback)` to trap and skip original opcode
 - `inline_hook(addr, replace_fn)` with automatic far-jump fallback
+- `unhook(address)` to restore bytes and remove hook runtime state
 - zero-copy context remap (`HookContext`) in callbacks
 - architecture-specific callback context (`aarch64` and `x86_64` layouts)
 
@@ -116,6 +117,19 @@ let _original = inline_hook(function_entry, replacement_addr)?;
 # Ok::<(), sighook::SigHookError>(())
 ```
 
+### 4) Unhook and restore
+
+```rust,ignore
+use sighook::{instrument, unhook, HookContext};
+
+extern "C" fn on_hit(_address: u64, _ctx: *mut HookContext) {}
+
+let target_instruction = 0x1000_0000_u64;
+let _ = instrument(target_instruction, on_hit)?;
+unhook(target_instruction)?;
+# Ok::<(), sighook::SigHookError>(())
+```
+
 ## Example Loading Model
 
 The examples are `cdylib` payloads that auto-run hook install logic via constructor sections:
@@ -184,6 +198,7 @@ For AArch64 Linux examples, `calc`-based demos export a dedicated `calc_add_insn
 - `instrument(...)` should not be used for PC-relative patch points (for example: `aarch64` `adr`/`adrp`, or `x86_64` RIP-relative `lea`/`mov`).
 - `instrument_no_original(...)` skips original instruction unless callback changes control-flow register (`pc`/`rip`). For PC-relative patch points, prefer this API and emulate the instruction in callback.
 - `inline_hook(...)` uses architecture-specific near jump first, then far-jump fallback.
+- `unhook(...)` restores patch bytes for addresses installed via `instrument(...)`, `instrument_no_original(...)`, or `inline_hook(...)`.
 
 ## Safety Notes
 

@@ -349,48 +349,134 @@ fn instrument_internal(
 pub fn inline_hook(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
     #[cfg(target_arch = "aarch64")]
     {
-        match memory::encode_b(addr, replace_fn) {
-            Ok(b_opcode) => patchcode(addr, b_opcode),
+        let patch = match memory::encode_b(addr, replace_fn) {
+            Ok(b_opcode) => b_opcode.to_le_bytes().to_vec(),
             Err(SigHookError::BranchOutOfRange) => {
-                let original = memory::patch_far_jump(addr, replace_fn)?;
-                unsafe {
-                    state::cache_original_opcode(addr, original);
-                }
-                Ok(original)
+                let mut bytes = [0u8; 16];
+                bytes[0..4].copy_from_slice(&constants::LDR_X16_LITERAL_8.to_le_bytes());
+                bytes[4..8].copy_from_slice(&constants::BR_X16.to_le_bytes());
+                bytes[8..16].copy_from_slice(&replace_fn.to_le_bytes());
+                bytes.to_vec()
             }
-            Err(err) => Err(err),
+            Err(err) => return Err(err),
+        };
+
+        let original = memory::read_bytes(addr, patch.len())?;
+        let inserted = unsafe { state::cache_inline_patch(addr, &original)? };
+        if let Err(err) = memory::patch_bytes_public(addr, &patch) {
+            if inserted {
+                unsafe {
+                    state::remove_inline_patch(addr);
+                }
+            }
+            return Err(err);
         }
+
+        if original.len() < 4 {
+            return Err(SigHookError::InvalidAddress);
+        }
+
+        let mut opcode = [0u8; 4];
+        opcode.copy_from_slice(&original[..4]);
+        let original_opcode = u32::from_le_bytes(opcode);
+        unsafe {
+            state::cache_original_opcode(addr, original_opcode);
+        }
+        Ok(original_opcode)
     }
 
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     {
-        if let Ok(jmp) = memory::encode_jmp_rel32(addr, replace_fn) {
-            let original = memory::patch_bytes_public(addr, &jmp)?;
-            let mut opcode = [0u8; 4];
-            if original.len() >= 4 {
-                opcode.copy_from_slice(&original[..4]);
-                let original_opcode = u32::from_le_bytes(opcode);
+        let patch = if let Ok(jmp) = memory::encode_jmp_rel32(addr, replace_fn) {
+            jmp.to_vec()
+        } else {
+            memory::encode_absolute_jump(replace_fn).to_vec()
+        };
+
+        let original = memory::read_bytes(addr, patch.len())?;
+        let inserted = unsafe { state::cache_inline_patch(addr, &original)? };
+        if let Err(err) = memory::patch_bytes_public(addr, &patch) {
+            if inserted {
                 unsafe {
-                    state::cache_original_opcode(addr, original_opcode);
+                    state::remove_inline_patch(addr);
                 }
-                return Ok(original_opcode);
             }
+            return Err(err);
+        }
+
+        if original.len() < 4 {
             return Err(SigHookError::InvalidAddress);
         }
 
-        let abs = memory::encode_absolute_jump(replace_fn);
-        let original = memory::patch_bytes_public(addr, &abs)?;
         let mut opcode = [0u8; 4];
-        if original.len() >= 4 {
-            opcode.copy_from_slice(&original[..4]);
-            let original_opcode = u32::from_le_bytes(opcode);
-            unsafe {
-                state::cache_original_opcode(addr, original_opcode);
-            }
-            return Ok(original_opcode);
+        opcode.copy_from_slice(&original[..4]);
+        let original_opcode = u32::from_le_bytes(opcode);
+        unsafe {
+            state::cache_original_opcode(addr, original_opcode);
         }
-        Err(SigHookError::InvalidAddress)
+        Ok(original_opcode)
     }
+}
+
+/// Restores a previously installed hook at `address`.
+///
+/// This API supports hook points created by [`instrument`], [`instrument_no_original`],
+/// and [`inline_hook`]. On success, the patched instruction bytes are restored and
+/// internal runtime state for that address is removed.
+///
+/// Signal handlers stay installed once initialized, even after unhooking all addresses.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use sighook::{instrument, unhook, HookContext};
+///
+/// extern "C" fn on_hit(_address: u64, _ctx: *mut HookContext) {}
+///
+/// let addr = 0x1000_0000u64;
+/// let _ = instrument(addr, on_hit)?;
+/// unhook(addr)?;
+/// # Ok::<(), sighook::SigHookError>(())
+/// ```
+pub fn unhook(address: u64) -> Result<(), SigHookError> {
+    if address == 0 {
+        return Err(SigHookError::InvalidAddress);
+    }
+
+    unsafe {
+        if let Some(slot) = state::slot_by_address(address) {
+            if slot.original_len == 0 {
+                return Err(SigHookError::InvalidAddress);
+            }
+
+            memory::patch_bytes_public(
+                address,
+                &slot.original_bytes[..slot.original_len as usize],
+            )?;
+
+            if let Some(removed_slot) = state::remove_slot(address) {
+                if removed_slot.trampoline_pc != 0 {
+                    trampoline::free_original_trampoline(removed_slot.trampoline_pc);
+                }
+            }
+
+            state::remove_cached_original_opcode(address);
+            return Ok(());
+        }
+
+        if let Some((bytes, len)) = state::inline_patch_by_address(address) {
+            if len == 0 {
+                return Err(SigHookError::InvalidAddress);
+            }
+
+            memory::patch_bytes_public(address, &bytes[..len as usize])?;
+            state::remove_inline_patch(address);
+            state::remove_cached_original_opcode(address);
+            return Ok(());
+        }
+    }
+
+    Err(SigHookError::HookNotFound)
 }
 
 /// Returns the saved original 4-byte value for a previously patched address.

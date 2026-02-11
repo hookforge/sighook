@@ -2,6 +2,7 @@
 use crate::constants::{BR_X16, LDR_X16_LITERAL_8};
 use crate::error::SigHookError;
 use crate::memory::{flush_instruction_cache, last_errno};
+use libc::c_void;
 use std::ptr::null_mut;
 
 pub(crate) fn create_original_trampoline(
@@ -94,6 +95,21 @@ pub(crate) fn create_original_trampoline(
     }
 
     Ok(base as u64)
+}
+
+pub(crate) unsafe fn free_original_trampoline(trampoline_pc: u64) {
+    if trampoline_pc == 0 {
+        return;
+    }
+
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page_size <= 0 {
+        return;
+    }
+
+    unsafe {
+        let _ = libc::munmap(trampoline_pc as *mut c_void, page_size as usize);
+    }
 }
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]

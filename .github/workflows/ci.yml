@@ -59,6 +59,12 @@ jobs:
           echo "$OUT"
           [[ "$OUT" == *"calc(4, 5) = 99"* ]]
 
+          cc -O0 -fno-inline examples/instrument_unhook_restore/target.c -o examples/instrument_unhook_restore/app
+          DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libinstrument_unhook_restore.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/instrument_unhook_restore/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(3, 4) = 7"* ]]
+
           cc -O0 -fno-inline examples/inline_hook_far/target.c -o examples/inline_hook_far/app
           DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libinline_hook_far.dylib"
           OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/inline_hook_far/app)
@@ -102,10 +108,11 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --all-targets --target x86_64-apple-darwin -- -D warnings
 
-      - name: Build four base examples (macOS x86_64)
+      - name: Build five base examples (macOS x86_64)
         run: |
           cargo build --example instrument_with_original --target x86_64-apple-darwin
           cargo build --example instrument_no_original --target x86_64-apple-darwin
+          cargo build --example instrument_unhook_restore --target x86_64-apple-darwin
           cargo build --example inline_hook_far --target x86_64-apple-darwin
           cargo build --example patchcode_add_to_mul --target x86_64-apple-darwin
 
@@ -125,6 +132,12 @@ jobs:
           OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/instrument_no_original/app)
           echo "$OUT"
           [[ "$OUT" == *"calc(4, 5) = 99"* ]]
+
+          cc -O0 -fno-inline examples/instrument_unhook_restore/target.c -o examples/instrument_unhook_restore/app
+          DYLIB="$PWD/target/x86_64-apple-darwin/debug/examples/libinstrument_unhook_restore.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/instrument_unhook_restore/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(3, 4) = 7"* ]]
 
           cc -O0 -fno-inline examples/inline_hook_far/target.c -o examples/inline_hook_far/app
           DYLIB="$PWD/target/x86_64-apple-darwin/debug/examples/libinline_hook_far.dylib"
@@ -187,6 +200,12 @@ jobs:
           OUT=$(LD_PRELOAD="$SO" examples/instrument_no_original/app)
           echo "$OUT"
           [[ "$OUT" == *"calc(4, 5) = 99"* ]]
+
+          cc -O0 -fno-inline -rdynamic examples/instrument_unhook_restore/target.c -o examples/instrument_unhook_restore/app
+          SO="$PWD/target/x86_64-unknown-linux-gnu/debug/examples/libinstrument_unhook_restore.so"
+          OUT=$(LD_PRELOAD="$SO" examples/instrument_unhook_restore/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(3, 4) = 7"* ]]
 
           cc -O0 -fno-inline -rdynamic examples/inline_hook_far/target.c -o examples/inline_hook_far/app
           SO="$PWD/target/x86_64-unknown-linux-gnu/debug/examples/libinline_hook_far.so"
@@ -255,6 +274,12 @@ jobs:
           OUT=$(LD_PRELOAD="$SO" examples/instrument_no_original/app)
           echo "$OUT"
           [[ "$OUT" == *"calc(4, 5) = 99"* ]]
+
+          cc -O0 -fno-inline -rdynamic examples/instrument_unhook_restore/target.c -o examples/instrument_unhook_restore/app
+          SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libinstrument_unhook_restore.so"
+          OUT=$(LD_PRELOAD="$SO" examples/instrument_unhook_restore/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(3, 4) = 7"* ]]
 
           cc -O0 -fno-inline -rdynamic examples/instrument_adrp_no_original/target.c -o examples/instrument_adrp_no_original/app
           SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libinstrument_adrp_no_original.so"
