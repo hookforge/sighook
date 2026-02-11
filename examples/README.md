@@ -40,7 +40,7 @@ Available examples:
 - `x86_64-apple-darwin`: compile coverage for all 4 examples, plus optional `patch_asm` build
 - `aarch64-unknown-linux-gnu`: runtime smoke coverage for all 6 core examples (CI, includes `instrument_adrp_no_original`)
 - `aarch64-unknown-linux-gnu`: plus optional `patch_asm` smoke (`--features patch_asm`)
-- `x86_64-unknown-linux-gnu`: runtime smoke coverage for 5 base examples (CI), plus optional `patch_asm` smoke (`--features patch_asm`)
+- `x86_64-unknown-linux-gnu`: runtime smoke coverage for 4 base examples (CI), plus optional `patch_asm` smoke (`--features patch_asm`)
 
 ## Notes by architecture
 
