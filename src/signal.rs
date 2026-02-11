@@ -303,6 +303,12 @@ fn handle_trap_aarch64(
         return true;
     }
 
+    if slot.return_to_caller {
+        let ctx = unsafe { &mut *ctx_ptr };
+        ctx.pc = unsafe { ctx.regs.named.x30 };
+        return true;
+    }
+
     let next_pc = address.wrapping_add(slot.step_len as u64);
     let trampoline_pc = if slot.execute_original {
         slot.trampoline_pc
@@ -335,6 +341,18 @@ fn handle_trap_x86_64(
 
     let current_pc = unsafe { (*ctx_ptr).rip };
     if current_pc != original_pc {
+        return true;
+    }
+
+    if slot.return_to_caller {
+        let ctx = unsafe { &mut *ctx_ptr };
+        if ctx.rsp == 0 {
+            return false;
+        }
+
+        let return_address = unsafe { std::ptr::read_unaligned(ctx.rsp as *const u64) };
+        ctx.rsp = ctx.rsp.wrapping_add(8);
+        ctx.rip = return_address;
         return true;
     }
 

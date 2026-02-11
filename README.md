@@ -19,19 +19,20 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 - `patch_asm(address, asm)` for assembling then patching (feature-gated; x86_64 pads with NOPs when assembled bytes are shorter than current instruction)
 - `instrument(address, callback)` to trap and then execute original opcode
 - `instrument_no_original(address, callback)` to trap and skip original opcode
-- `inline_hook(addr, replace_fn)` with automatic far-jump fallback
+- `inline_hook(addr, callback)` for signal-based function-entry hooks
+- `inline_hook_jump(addr, replace_fn)` with automatic far-jump fallback
 - `unhook(address)` to restore bytes and remove hook runtime state
 - zero-copy context remap (`HookContext`) in callbacks
 - architecture-specific callback context (`aarch64` and `x86_64` layouts)
 
 ## Platform Support
 
-- `aarch64-apple-darwin`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook`)
-- `x86_64-apple-darwin`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook`)
-- `aarch64-apple-ios`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook`)
-- `aarch64-unknown-linux-gnu`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook`)
-- `aarch64-linux-android`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook`)
-- `x86_64-unknown-linux-gnu`: full API support; CI smoke validates `patchcode` / `instrument` / `instrument_no_original` / `inline_hook` examples
+- `aarch64-apple-darwin`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
+- `x86_64-apple-darwin`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
+- `aarch64-apple-ios`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
+- `aarch64-unknown-linux-gnu`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
+- `aarch64-linux-android`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
+- `x86_64-unknown-linux-gnu`: full API support; CI smoke validates `patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump` examples
 - single-thread model (`static mut` internal state)
 
 `patch_asm` is currently available on:
@@ -104,20 +105,43 @@ let _original = instrument_no_original(target_instruction, replace_logic)?;
 # Ok::<(), sighook::SigHookError>(())
 ```
 
-### 3) Inline function hook
+### 3) Signal-based inline entry hook
 
 ```rust,no_run
-use sighook::inline_hook;
+use sighook::{inline_hook, HookContext};
+
+extern "C" fn replacement(_address: u64, ctx: *mut HookContext) {
+    unsafe {
+        #[cfg(target_arch = "aarch64")]
+        {
+            (*ctx).regs.named.x0 = 42;
+        }
+        #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+        {
+            (*ctx).rax = 42;
+        }
+    }
+}
+
+let function_entry = 0x1000_1000_u64;
+let _original = inline_hook(function_entry, replacement)?;
+# Ok::<(), sighook::SigHookError>(())
+```
+
+### 4) Jump-based inline detour
+
+```rust,no_run
+use sighook::inline_hook_jump;
 
 extern "C" fn replacement() {}
 
 let function_entry = 0x1000_1000_u64;
 let replacement_addr = replacement as usize as u64;
-let _original = inline_hook(function_entry, replacement_addr)?;
+let _original = inline_hook_jump(function_entry, replacement_addr)?;
 # Ok::<(), sighook::SigHookError>(())
 ```
 
-### 4) Unhook and restore
+### 5) Unhook and restore
 
 ```rust,ignore
 use sighook::{instrument, unhook, HookContext};
@@ -197,8 +221,9 @@ For AArch64 Linux examples, `calc`-based demos export a dedicated `calc_add_insn
 - `instrument(...)` executes original instruction through an internal trampoline.
 - `instrument(...)` should not be used for PC-relative patch points (for example: `aarch64` `adr`/`adrp`, or `x86_64` RIP-relative `lea`/`mov`).
 - `instrument_no_original(...)` skips original instruction unless callback changes control-flow register (`pc`/`rip`). For PC-relative patch points, prefer this API and emulate the instruction in callback.
-- `inline_hook(...)` uses architecture-specific near jump first, then far-jump fallback.
-- `unhook(...)` restores patch bytes for addresses installed via `instrument(...)`, `instrument_no_original(...)`, or `inline_hook(...)`.
+- `inline_hook(...)` installs an entry trap and returns to caller by default when callback leaves `pc`/`rip` unchanged.
+- `inline_hook_jump(...)` uses architecture-specific near jump first, then far-jump fallback.
+- `unhook(...)` restores patch bytes for addresses installed via `instrument(...)`, `instrument_no_original(...)`, `inline_hook(...)`, or `inline_hook_jump(...)`.
 
 ## Safety Notes
 

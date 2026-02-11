@@ -226,7 +226,7 @@ pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
 /// # Ok::<(), sighook::SigHookError>(())
 /// ```
 pub fn instrument(address: u64, callback: InstrumentCallback) -> Result<u32, SigHookError> {
-    instrument_internal(address, callback, true)
+    instrument_internal(address, callback, true, false)
 }
 
 /// Installs an instruction-level hook and skips the original instruction by default.
@@ -253,13 +253,14 @@ pub fn instrument_no_original(
     address: u64,
     callback: InstrumentCallback,
 ) -> Result<u32, SigHookError> {
-    instrument_internal(address, callback, false)
+    instrument_internal(address, callback, false, false)
 }
 
 fn instrument_internal(
     address: u64,
     callback: InstrumentCallback,
     execute_original: bool,
+    return_to_caller: bool,
 ) -> Result<u32, SigHookError> {
     unsafe {
         if let Some((bytes, len)) = state::original_bytes_by_address(address) {
@@ -269,6 +270,7 @@ fn instrument_internal(
                 len,
                 callback,
                 execute_original,
+                return_to_caller,
             )?;
             let original_opcode = state::cached_original_opcode_by_address(address)
                 .or_else(|| state::original_opcode_by_address(address))
@@ -306,6 +308,7 @@ fn instrument_internal(
             step_len,
             callback,
             execute_original,
+            return_to_caller,
         );
 
         if let Err(err) = register_result {
@@ -331,7 +334,46 @@ fn instrument_internal(
     }
 }
 
-/// Detours a function entry to `replace_fn` with inline patching.
+/// Hooks a function entry by trap instruction and returns to caller by default.
+///
+/// This API installs a signal-based entry hook using trap instrumentation.
+/// In your callback, set return-value registers (for example `x0` or `rax`).
+///
+/// If your callback does not redirect control flow (`pc`/`rip` unchanged),
+/// this hook returns to the caller automatically:
+/// - `aarch64`: `pc <- x30`
+/// - `x86_64`: `rip <- [rsp]`, `rsp += 8` (equivalent to `ret`)
+///
+/// Returns the first 4 bytes of original instruction bytes at `addr`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use sighook::{inline_hook, HookContext};
+///
+/// extern "C" fn replacement(_address: u64, ctx: *mut HookContext) {
+///     unsafe {
+///         #[cfg(target_arch = "aarch64")]
+///         {
+///             (*ctx).regs.named.x0 = 42;
+///         }
+///         #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+///         {
+///             (*ctx).rax = 42;
+///         }
+///     }
+/// }
+///
+/// let function_entry = 0x1000_1000u64;
+/// let original = inline_hook(function_entry, replacement)?;
+/// let _ = original;
+/// # Ok::<(), sighook::SigHookError>(())
+/// ```
+pub fn inline_hook(addr: u64, callback: InstrumentCallback) -> Result<u32, SigHookError> {
+    instrument_internal(addr, callback, false, true)
+}
+
+/// Detours a function entry to `replace_fn` with inline jump patching.
 ///
 /// Strategy:
 /// - Try near jump first (short encoding).
@@ -342,17 +384,17 @@ fn instrument_internal(
 /// # Example
 ///
 /// ```rust,no_run
-/// use sighook::inline_hook;
+/// use sighook::inline_hook_jump;
 ///
 /// extern "C" fn replacement() {}
 ///
 /// let function_entry = 0x1000_1000u64;
 /// let replacement_addr = replacement as usize as u64;
-/// let original = inline_hook(function_entry, replacement_addr)?;
+/// let original = inline_hook_jump(function_entry, replacement_addr)?;
 /// let _ = original;
 /// # Ok::<(), sighook::SigHookError>(())
 /// ```
-pub fn inline_hook(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
+pub fn inline_hook_jump(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
     #[cfg(target_arch = "aarch64")]
     {
         let patch = match memory::encode_b(addr, replace_fn) {
@@ -427,7 +469,7 @@ pub fn inline_hook(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
 /// Restores a previously installed hook at `address`.
 ///
 /// This API supports hook points created by [`instrument`], [`instrument_no_original`],
-/// and [`inline_hook`]. On success, the patched instruction bytes are restored and
+/// [`inline_hook`], and [`inline_hook_jump`]. On success, the patched instruction bytes are restored and
 /// internal runtime state for that address is removed.
 ///
 /// Signal handlers stay installed once initialized, even after unhooking all addresses.
@@ -488,7 +530,7 @@ pub fn unhook(address: u64) -> Result<(), SigHookError> {
 /// Returns the saved original 4-byte value for a previously patched address.
 ///
 /// The value is available after a successful call to [`patchcode`], [`instrument`],
-/// [`instrument_no_original`], or [`inline_hook`] on the same address.
+/// [`instrument_no_original`], [`inline_hook`], or [`inline_hook_jump`] on the same address.
 ///
 /// # Example
 ///

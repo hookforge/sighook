@@ -1,6 +1,6 @@
 # inline_hook_far
 
-Demonstrates `sighook::inline_hook` at function entry.
+Demonstrates `sighook::inline_hook_jump` at function entry.
 
 The hook detours `target_add` to a replacement function in the injected dylib.
 

@@ -1,7 +1,17 @@
-use sighook::inline_hook_jump;
+use sighook::{HookContext, inline_hook};
 
-extern "C" fn replacement(a: i32, b: i32) -> i32 {
-    a * b
+extern "C" fn replace_in_callback(_address: u64, ctx: *mut HookContext) {
+    unsafe {
+        #[cfg(target_arch = "aarch64")]
+        {
+            (*ctx).regs.named.x0 = 42;
+        }
+
+        #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+        {
+            (*ctx).rax = 42;
+        }
+    }
 }
 
 #[used]
@@ -23,7 +33,6 @@ extern "C" fn init() {
         }
 
         let function_entry = symbol as u64;
-        let replacement_fn = replacement as *const () as usize as u64;
-        let _ = inline_hook_jump(function_entry, replacement_fn);
+        let _ = inline_hook(function_entry, replace_in_callback);
     }
 }
