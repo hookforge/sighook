@@ -63,6 +63,7 @@ jobs:
           DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libinstrument_unhook_restore.dylib"
           OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/instrument_unhook_restore/app)
           echo "$OUT"
+          [[ "$OUT" == *"hooked_calc(3, 4) = 123"* ]]
           [[ "$OUT" == *"calc(3, 4) = 7"* ]]
 
           cc -O0 -fno-inline examples/inline_hook_far/target.c -o examples/inline_hook_far/app
@@ -137,6 +138,7 @@ jobs:
           DYLIB="$PWD/target/x86_64-apple-darwin/debug/examples/libinstrument_unhook_restore.dylib"
           OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/instrument_unhook_restore/app)
           echo "$OUT"
+          [[ "$OUT" == *"hooked_calc(3, 4) = 123"* ]]
           [[ "$OUT" == *"calc(3, 4) = 7"* ]]
 
           cc -O0 -fno-inline examples/inline_hook_far/target.c -o examples/inline_hook_far/app
@@ -200,6 +202,13 @@ jobs:
           OUT=$(LD_PRELOAD="$SO" examples/instrument_no_original/app)
           echo "$OUT"
           [[ "$OUT" == *"calc(4, 5) = 99"* ]]
+
+          cc -O0 -fno-inline -rdynamic examples/instrument_unhook_restore/target.c -o examples/instrument_unhook_restore/app
+          SO="$PWD/target/x86_64-unknown-linux-gnu/debug/examples/libinstrument_unhook_restore.so"
+          OUT=$(LD_PRELOAD="$SO" examples/instrument_unhook_restore/app)
+          echo "$OUT"
+          [[ "$OUT" == *"hooked_calc(3, 4) = 123"* ]]
+          [[ "$OUT" == *"calc(3, 4) = 7"* ]]
 
           cc -O0 -fno-inline -rdynamic examples/inline_hook_far/target.c -o examples/inline_hook_far/app
           SO="$PWD/target/x86_64-unknown-linux-gnu/debug/examples/libinline_hook_far.so"
@@ -273,6 +282,7 @@ jobs:
           SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libinstrument_unhook_restore.so"
           OUT=$(LD_PRELOAD="$SO" examples/instrument_unhook_restore/app)
           echo "$OUT"
+          [[ "$OUT" == *"hooked_calc(3, 4) = 123"* ]]
           [[ "$OUT" == *"calc(3, 4) = 7"* ]]
 
           cc -O0 -fno-inline -rdynamic examples/instrument_adrp_no_original/target.c -o examples/instrument_adrp_no_original/app

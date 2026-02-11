@@ -34,6 +34,12 @@ static INIT_ARRAY: extern "C" fn() = init;
 
 extern "C" fn init() {
     unsafe {
+        let calc_symbol = libc::dlsym(libc::RTLD_DEFAULT, c"calc".as_ptr());
+        if calc_symbol.is_null() {
+            return;
+        }
+        let calc_fn: extern "C" fn(i32, i32) -> i32 = std::mem::transmute(calc_symbol);
+
         let target_address = {
             #[cfg(all(
                 any(target_os = "linux", target_os = "android"),
@@ -66,7 +72,11 @@ extern "C" fn init() {
             }
         };
 
-        if instrument(target_address, on_hit_should_not_run).is_err() {
+        let _ = instrument(target_address, on_hit_should_not_run);
+
+        let hooked = calc_fn(3, 4);
+        println!("hooked_calc(3, 4) = {hooked}");
+        if hooked != 123 {
             return;
         }
 
