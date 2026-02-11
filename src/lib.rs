@@ -196,6 +196,9 @@ pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
 /// If the callback does not redirect control flow (`pc`/`rip` unchanged),
 /// the original instruction runs through an internal trampoline, then execution continues.
 ///
+/// On `x86_64`, trap patching writes `int3` at instruction start and pads the
+/// remaining bytes of that decoded instruction with `NOP`.
+///
 /// # PC-relative note
 ///
 /// Across architectures, this API does **not** support patch points whose original
@@ -267,7 +270,10 @@ fn instrument_internal(
                 callback,
                 execute_original,
             )?;
-            return state::original_opcode_by_address(address).ok_or(SigHookError::InvalidAddress);
+            let original_opcode = state::cached_original_opcode_by_address(address)
+                .or_else(|| state::original_opcode_by_address(address))
+                .ok_or(SigHookError::InvalidAddress)?;
+            return Ok(original_opcode);
         }
 
         signal::ensure_handlers_installed()?;
@@ -275,16 +281,27 @@ fn instrument_internal(
         let step_len: u8 = memory::instruction_width(address)?;
 
         #[cfg(target_arch = "aarch64")]
-        let original_bytes = {
+        let (original_bytes, original_opcode) = {
             let original = memory::patch_u32(address, constants::BRK_OPCODE)?;
-            original.to_le_bytes().to_vec()
+            (original.to_le_bytes().to_vec(), original)
         };
 
         #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-        let original_bytes = {
+        let (original_bytes, original_opcode) = {
             let original_bytes = memory::read_bytes(address, step_len as usize)?;
-            let _ = memory::patch_u8(address, memory::int3_opcode())?;
-            original_bytes
+            let original4 = memory::read_bytes(address, 4)?;
+
+            if step_len == 1 {
+                let _ = memory::patch_u8(address, memory::int3_opcode())?;
+            } else {
+                let mut trap_patch = vec![0x90u8; step_len as usize];
+                trap_patch[0] = memory::int3_opcode();
+                let _ = memory::patch_bytes_public(address, &trap_patch)?;
+            }
+
+            let mut opcode = [0u8; 4];
+            opcode.copy_from_slice(&original4);
+            (original_bytes, u32::from_le_bytes(opcode))
         };
 
         let register_result = state::register_slot(
@@ -312,13 +329,6 @@ fn instrument_internal(
             return Err(err);
         }
 
-        if original_bytes.len() < 4 {
-            return Err(SigHookError::InvalidAddress);
-        }
-
-        let mut bytes = [0u8; 4];
-        bytes.copy_from_slice(&original_bytes[..4]);
-        let original_opcode = u32::from_le_bytes(bytes);
         state::cache_original_opcode(address, original_opcode);
 
         Ok(original_opcode)
