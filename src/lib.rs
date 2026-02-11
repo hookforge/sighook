@@ -291,13 +291,9 @@ fn instrument_internal(
             let original_bytes = memory::read_bytes(address, step_len as usize)?;
             let original4 = memory::read_bytes(address, 4)?;
 
-            if step_len == 1 {
-                let _ = memory::patch_u8(address, memory::int3_opcode())?;
-            } else {
-                let mut trap_patch = vec![0x90u8; step_len as usize];
-                trap_patch[0] = memory::int3_opcode();
-                let _ = memory::patch_bytes_public(address, &trap_patch)?;
-            }
+            let mut trap_patch = vec![0x90u8; step_len as usize];
+            trap_patch[0] = memory::int3_opcode();
+            let _ = memory::patch_bytes_public(address, &trap_patch)?;
 
             let mut opcode = [0u8; 4];
             opcode.copy_from_slice(&original4);
@@ -371,7 +367,7 @@ pub fn inline_hook(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
             Err(err) => return Err(err),
         };
 
-        let original = memory::read_bytes(addr, patch.len())?;
+        let original = memory::read_bytes(addr, 16)?;
         let inserted = unsafe { state::cache_inline_patch(addr, &original)? };
         if let Err(err) = memory::patch_bytes_public(addr, &patch) {
             if inserted {
@@ -403,7 +399,7 @@ pub fn inline_hook(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
             memory::encode_absolute_jump(replace_fn).to_vec()
         };
 
-        let original = memory::read_bytes(addr, patch.len())?;
+        let original = memory::read_bytes(addr, memory::encode_absolute_jump(0).len())?;
         let inserted = unsafe { state::cache_inline_patch(addr, &original)? };
         if let Err(err) = memory::patch_bytes_public(addr, &patch) {
             if inserted {

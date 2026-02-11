@@ -72,7 +72,10 @@ extern "C" fn init() {
             }
         };
 
-        let _ = instrument(target_address, on_hit_should_not_run);
+        if let Err(err) = instrument(target_address, on_hit_should_not_run) {
+            println!("instrument failed: {err}");
+            return;
+        }
 
         let hooked = calc_fn(3, 4);
         println!("hooked_calc(3, 4) = {hooked}");
@@ -80,6 +83,8 @@ extern "C" fn init() {
             return;
         }
 
-        let _ = unhook(target_address);
+        if let Err(err) = unhook(target_address) {
+            println!("unhook failed: {err}");
+        }
     }
 }

@@ -248,12 +248,6 @@ fn patch_bytes(address: u64, bytes: &[u8]) -> Result<Vec<u8>, SigHookError> {
     Ok(original)
 }
 
-#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-pub(crate) fn patch_u8(address: u64, new_opcode: u8) -> Result<u8, SigHookError> {
-    let original = patch_bytes(address, &[new_opcode])?;
-    Ok(original[0])
-}
-
 pub(crate) fn read_bytes(address: u64, len: usize) -> Result<Vec<u8>, SigHookError> {
     if address == 0 || len == 0 {
         return Err(SigHookError::InvalidAddress);
