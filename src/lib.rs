@@ -226,7 +226,13 @@ pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
 /// # Ok::<(), sighook::SigHookError>(())
 /// ```
 pub fn instrument(address: u64, callback: InstrumentCallback) -> Result<u32, SigHookError> {
-    instrument_internal(address, callback, true, false)
+    instrument_internal(
+        address,
+        callback,
+        true,
+        false,
+        InstrumentInstallMode::RuntimePatch,
+    )
 }
 
 /// Installs an instruction-level hook and skips the original instruction by default.
@@ -253,7 +259,121 @@ pub fn instrument_no_original(
     address: u64,
     callback: InstrumentCallback,
 ) -> Result<u32, SigHookError> {
-    instrument_internal(address, callback, false, false)
+    instrument_internal(
+        address,
+        callback,
+        false,
+        false,
+        InstrumentInstallMode::RuntimePatch,
+    )
+}
+
+#[derive(Copy, Clone)]
+enum InstrumentInstallMode {
+    RuntimePatch,
+    Prepatched,
+}
+
+fn ensure_prepatched_trap(address: u64) -> Result<(), SigHookError> {
+    if address == 0 {
+        return Err(SigHookError::InvalidAddress);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let opcode = memory::read_u32(address);
+        if !memory::is_brk(opcode) {
+            return Err(SigHookError::InvalidAddress);
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    {
+        let opcode = memory::read_u8(address);
+        if !memory::is_int3(opcode) {
+            return Err(SigHookError::InvalidAddress);
+        }
+    }
+
+    Ok(())
+}
+
+/// APIs for trap points that are already patched offline (for example static `brk/int3` patching).
+///
+/// These APIs reuse the same signal handling and callback contract as runtime patch APIs,
+/// but they do not modify executable code pages at install time.
+///
+/// Notes:
+/// - `prepatched::*` requires that the target address already contains a trap instruction.
+/// - `prepatched::instrument_no_original` and `prepatched::inline_hook` are the primary paths.
+/// - `prepatched::instrument` needs original instruction bytes to execute through trampoline.
+///   For `aarch64`, you can preload original opcode via [`cache_original_opcode`].
+pub mod prepatched {
+    #[cfg(target_arch = "aarch64")]
+    use super::state;
+    use super::{InstrumentCallback, InstrumentInstallMode, SigHookError, instrument_internal};
+
+    /// Registers a prepatched trap point and executes original instruction afterward.
+    ///
+    /// This API does not write trap opcodes. The target address must already be patched
+    /// to trap offline.
+    ///
+    /// On `aarch64`, execution of original instruction requires a preloaded original opcode.
+    /// Use [`cache_original_opcode`] before calling this function.
+    pub fn instrument(address: u64, callback: InstrumentCallback) -> Result<u32, SigHookError> {
+        instrument_internal(
+            address,
+            callback,
+            true,
+            false,
+            InstrumentInstallMode::Prepatched,
+        )
+    }
+
+    /// Registers a prepatched trap point and skips original instruction by default.
+    ///
+    /// This API does not write trap opcodes. The target address must already be patched
+    /// to trap offline.
+    pub fn instrument_no_original(
+        address: u64,
+        callback: InstrumentCallback,
+    ) -> Result<u32, SigHookError> {
+        instrument_internal(
+            address,
+            callback,
+            false,
+            false,
+            InstrumentInstallMode::Prepatched,
+        )
+    }
+
+    /// Registers a prepatched function-entry trap and returns to caller by default.
+    ///
+    /// This behaves like [`super::inline_hook`] but never patches executable code pages.
+    pub fn inline_hook(addr: u64, callback: InstrumentCallback) -> Result<u32, SigHookError> {
+        instrument_internal(
+            addr,
+            callback,
+            false,
+            true,
+            InstrumentInstallMode::Prepatched,
+        )
+    }
+
+    /// Preloads original opcode for prepatched trap points on `aarch64`.
+    ///
+    /// This is optional and only needed when using [`instrument`] (execute-original mode).
+    #[cfg(target_arch = "aarch64")]
+    pub fn cache_original_opcode(address: u64, original_opcode: u32) -> Result<(), SigHookError> {
+        if address == 0 || (address & 0b11) != 0 {
+            return Err(SigHookError::InvalidAddress);
+        }
+
+        unsafe {
+            state::cache_original_opcode(address, original_opcode);
+        }
+        Ok(())
+    }
 }
 
 fn instrument_internal(
@@ -261,6 +381,7 @@ fn instrument_internal(
     callback: InstrumentCallback,
     execute_original: bool,
     return_to_caller: bool,
+    install_mode: InstrumentInstallMode,
 ) -> Result<u32, SigHookError> {
     unsafe {
         if let Some((bytes, len)) = state::original_bytes_by_address(address) {
@@ -271,6 +392,7 @@ fn instrument_internal(
                 callback,
                 execute_original,
                 return_to_caller,
+                matches!(install_mode, InstrumentInstallMode::RuntimePatch),
             )?;
             let original_opcode = state::cached_original_opcode_by_address(address)
                 .or_else(|| state::original_opcode_by_address(address))
@@ -282,24 +404,62 @@ fn instrument_internal(
 
         let step_len: u8 = memory::instruction_width(address)?;
 
-        #[cfg(target_arch = "aarch64")]
-        let (original_bytes, original_opcode) = {
-            let original = memory::patch_u32(address, constants::BRK_OPCODE)?;
-            (original.to_le_bytes().to_vec(), original)
-        };
+        let (original_bytes, original_opcode, runtime_patch_installed) = match install_mode {
+            InstrumentInstallMode::RuntimePatch => {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let original = memory::patch_u32(address, constants::BRK_OPCODE)?;
+                    (original.to_le_bytes().to_vec(), original, true)
+                }
 
-        #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-        let (original_bytes, original_opcode) = {
-            let original_bytes = memory::read_bytes(address, step_len as usize)?;
-            let original4 = memory::read_bytes(address, 4)?;
+                #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+                {
+                    let original_bytes = memory::read_bytes(address, step_len as usize)?;
+                    let original4 = memory::read_bytes(address, 4)?;
 
-            let mut trap_patch = vec![0x90u8; step_len as usize];
-            trap_patch[0] = memory::int3_opcode();
-            let _ = memory::patch_bytes_public(address, &trap_patch)?;
+                    let mut trap_patch = vec![0x90u8; step_len as usize];
+                    trap_patch[0] = memory::int3_opcode();
+                    let _ = memory::patch_bytes_public(address, &trap_patch)?;
 
-            let mut opcode = [0u8; 4];
-            opcode.copy_from_slice(&original4);
-            (original_bytes, u32::from_le_bytes(opcode))
+                    let mut opcode = [0u8; 4];
+                    opcode.copy_from_slice(&original4);
+                    (original_bytes, u32::from_le_bytes(opcode), true)
+                }
+            }
+            InstrumentInstallMode::Prepatched => {
+                ensure_prepatched_trap(address)?;
+
+                #[cfg(target_arch = "aarch64")]
+                {
+                    if execute_original {
+                        let original_opcode = state::cached_original_opcode_by_address(address)
+                            .ok_or(SigHookError::UnsupportedOperation)?;
+                        (
+                            original_opcode.to_le_bytes().to_vec(),
+                            original_opcode,
+                            false,
+                        )
+                    } else {
+                        let original_bytes = memory::read_bytes(address, step_len as usize)?;
+                        let mut opcode = [0u8; 4];
+                        opcode.copy_from_slice(&original_bytes[..4]);
+                        (original_bytes, u32::from_le_bytes(opcode), false)
+                    }
+                }
+
+                #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+                {
+                    if execute_original {
+                        return Err(SigHookError::UnsupportedOperation);
+                    }
+
+                    let original_bytes = memory::read_bytes(address, step_len as usize)?;
+                    let original4 = memory::read_bytes(address, 4)?;
+                    let mut opcode = [0u8; 4];
+                    opcode.copy_from_slice(&original4);
+                    (original_bytes, u32::from_le_bytes(opcode), false)
+                }
+            }
         };
 
         let register_result = state::register_slot(
@@ -309,26 +469,31 @@ fn instrument_internal(
             callback,
             execute_original,
             return_to_caller,
+            runtime_patch_installed,
         );
 
         if let Err(err) = register_result {
-            #[cfg(target_arch = "aarch64")]
-            {
-                let mut bytes = [0u8; 4];
-                bytes.copy_from_slice(&original_bytes[..4]);
-                let original_opcode = u32::from_le_bytes(bytes);
-                let _ = memory::patch_u32(address, original_opcode);
-            }
+            if runtime_patch_installed {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let mut bytes = [0u8; 4];
+                    bytes.copy_from_slice(&original_bytes[..4]);
+                    let original_opcode = u32::from_le_bytes(bytes);
+                    let _ = memory::patch_u32(address, original_opcode);
+                }
 
-            #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-            {
-                let _ = memory::patch_bytes_public(address, &original_bytes);
+                #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+                {
+                    let _ = memory::patch_bytes_public(address, &original_bytes);
+                }
             }
 
             return Err(err);
         }
 
-        state::cache_original_opcode(address, original_opcode);
+        if runtime_patch_installed {
+            state::cache_original_opcode(address, original_opcode);
+        }
 
         Ok(original_opcode)
     }
@@ -370,7 +535,13 @@ fn instrument_internal(
 /// # Ok::<(), sighook::SigHookError>(())
 /// ```
 pub fn inline_hook(addr: u64, callback: InstrumentCallback) -> Result<u32, SigHookError> {
-    instrument_internal(addr, callback, false, true)
+    instrument_internal(
+        addr,
+        callback,
+        false,
+        true,
+        InstrumentInstallMode::RuntimePatch,
+    )
 }
 
 /// Detours a function entry to `replace_fn` with inline jump patching.
@@ -469,8 +640,9 @@ pub fn inline_hook_jump(addr: u64, replace_fn: u64) -> Result<u32, SigHookError>
 /// Restores a previously installed hook at `address`.
 ///
 /// This API supports hook points created by [`instrument`], [`instrument_no_original`],
-/// [`inline_hook`], and [`inline_hook_jump`]. On success, the patched instruction bytes are restored and
-/// internal runtime state for that address is removed.
+/// [`inline_hook`], [`prepatched::instrument`], [`prepatched::instrument_no_original`],
+/// [`prepatched::inline_hook`], and [`inline_hook_jump`]. On success, runtime state for that
+/// address is removed. For runtime-patched hooks, patched instruction bytes are also restored.
 ///
 /// Signal handlers stay installed once initialized, even after unhooking all addresses.
 ///
@@ -497,10 +669,12 @@ pub fn unhook(address: u64) -> Result<(), SigHookError> {
                 return Err(SigHookError::InvalidAddress);
             }
 
-            memory::patch_bytes_public(
-                address,
-                &slot.original_bytes[..slot.original_len as usize],
-            )?;
+            if slot.runtime_patch_installed {
+                memory::patch_bytes_public(
+                    address,
+                    &slot.original_bytes[..slot.original_len as usize],
+                )?;
+            }
 
             if let Some(removed_slot) = state::remove_slot(address) {
                 if removed_slot.trampoline_pc != 0 {

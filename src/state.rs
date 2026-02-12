@@ -13,6 +13,7 @@ pub(crate) struct InstrumentSlot {
     pub callback: Option<InstrumentCallback>,
     pub execute_original: bool,
     pub return_to_caller: bool,
+    pub runtime_patch_installed: bool,
     pub trampoline_pc: u64,
 }
 
@@ -26,6 +27,7 @@ impl InstrumentSlot {
         callback: None,
         execute_original: false,
         return_to_caller: false,
+        runtime_patch_installed: false,
         trampoline_pc: 0,
     };
 }
@@ -106,6 +108,7 @@ pub(crate) unsafe fn register_slot(
     callback: InstrumentCallback,
     execute_original: bool,
     return_to_caller: bool,
+    runtime_patch_installed: bool,
 ) -> Result<(), SigHookError> {
     if original_bytes.is_empty() || original_bytes.len() > 16 || step_len == 0 {
         return Err(SigHookError::InvalidAddress);
@@ -120,6 +123,7 @@ pub(crate) unsafe fn register_slot(
         slot.callback = Some(callback);
         slot.execute_original = execute_original;
         slot.return_to_caller = return_to_caller;
+        slot.runtime_patch_installed |= runtime_patch_installed;
 
         if slot.original_len == 0 {
             slot.original_len = original_bytes.len() as u8;
@@ -161,6 +165,7 @@ pub(crate) unsafe fn register_slot(
                     callback: Some(callback),
                     execute_original,
                     return_to_caller,
+                    runtime_patch_installed,
                     trampoline_pc,
                 };
             }

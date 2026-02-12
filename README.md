@@ -19,6 +19,7 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 - `patch_asm(address, asm)` for assembling then patching (feature-gated; x86_64 pads with NOPs when assembled bytes are shorter than current instruction)
 - `instrument(address, callback)` to trap and then execute original opcode
 - `instrument_no_original(address, callback)` to trap and skip original opcode
+- `prepatched::instrument*` / `prepatched::inline_hook` for offline trap points (no runtime text patch; recommended for iOS signed text pages)
 - `inline_hook(addr, callback)` for signal-based function-entry hooks
 - `inline_hook_jump(addr, replace_fn)` with automatic far-jump fallback
 - `unhook(address)` to restore bytes and remove hook runtime state
@@ -29,7 +30,7 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 
 - `aarch64-apple-darwin`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
 - `x86_64-apple-darwin`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
-- `aarch64-apple-ios`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
+- `aarch64-apple-ios`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `prepatched::*` / `inline_hook` / `inline_hook_jump`)
 - `aarch64-unknown-linux-gnu`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
 - `aarch64-linux-android`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
 - `x86_64-unknown-linux-gnu`: full API support; CI smoke validates `patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump` examples
@@ -46,14 +47,14 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 
 ```toml
 [dependencies]
-sighook = "0.8.0"
+sighook = "0.9.0"
 ```
 
 Enable assembly-string patching support only when needed:
 
 ```toml
 [dependencies]
-sighook = { version = "0.8.0", features = ["patch_asm"] }
+sighook = { version = "0.9.0", features = ["patch_asm"] }
 ```
 
 `patch_asm` pulls `keystone-engine`, which is a heavier dependency.
@@ -216,14 +217,27 @@ readelf -d libtarget.so | grep NEEDED
 
 For AArch64 Linux examples, `calc`-based demos export a dedicated `calc_add_insn` symbol and patch that symbol directly. This avoids brittle fixed-offset assumptions in toolchain-generated function layout.
 
+## iOS Prepatch Requirement
+
+For iOS hook workflows, `prepatched::*` is the primary path.
+
+iOS executable pages are code-signed. In normal (non-jailbreak) runtime environments, writing trap opcodes into signed text pages is usually rejected, so purely runtime non-invasive patching is not reliable. To keep hook points valid on iOS, pre-patch trap instructions (`brk`) offline before signing/distribution, then register callbacks at runtime through `prepatched::*`.
+
+- Prefer `prepatched::instrument_no_original(...)` and `prepatched::inline_hook(...)` on iOS.
+- `prepatched::instrument(...)` (execute-original mode) requires original opcode metadata on `aarch64`; preload it with `prepatched::cache_original_opcode(...)`.
+- `unhook(...)` removes runtime state for `prepatched::*`, but does not rewrite the prepatched text bytes.
+
 ## API Notes
 
 - `instrument(...)` executes original instruction through an internal trampoline.
 - `instrument(...)` should not be used for PC-relative patch points (for example: `aarch64` `adr`/`adrp`, or `x86_64` RIP-relative `lea`/`mov`).
 - `instrument_no_original(...)` skips original instruction unless callback changes control-flow register (`pc`/`rip`). For PC-relative patch points, prefer this API and emulate the instruction in callback.
+- `prepatched::*` APIs assume the address is already trap-patched offline (`brk`/`int3`) and do not write executable pages at runtime.
+- `prepatched::instrument(...)` needs original opcode metadata to execute original instruction (on `aarch64`, preload with `prepatched::cache_original_opcode(...)`).
+- `prepatched::instrument(...)` execute-original mode is currently unsupported on `x86_64`; use `prepatched::instrument_no_original(...)`.
 - `inline_hook(...)` installs an entry trap and returns to caller by default when callback leaves `pc`/`rip` unchanged.
 - `inline_hook_jump(...)` uses architecture-specific near jump first, then far-jump fallback.
-- `unhook(...)` restores patch bytes for addresses installed via `instrument(...)`, `instrument_no_original(...)`, `inline_hook(...)`, or `inline_hook_jump(...)`.
+- `unhook(...)` restores patch bytes for runtime-patched hooks; for `prepatched::*` hooks it removes runtime state only.
 
 ## Safety Notes
 
