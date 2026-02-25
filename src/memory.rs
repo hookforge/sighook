@@ -16,6 +16,17 @@ unsafe extern "C" {
     ) -> libc::kern_return_t;
 }
 
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+unsafe extern "C" {
+    fn mach_vm_read_overwrite(
+        target_task: libc::vm_map_t,
+        address: libc::mach_vm_address_t,
+        size: libc::mach_vm_size_t,
+        data: libc::mach_vm_address_t,
+        outsize: *mut libc::mach_vm_size_t,
+    ) -> libc::kern_return_t;
+}
+
 #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
 unsafe extern "C" {
     fn sys_icache_invalidate(start: *mut c_void, len: usize);
@@ -116,18 +127,93 @@ pub(crate) fn instruction_width(_address: u64) -> Result<u8, SigHookError> {
 pub(crate) fn instruction_width(address: u64) -> Result<u8, SigHookError> {
     use iced_x86::{Decoder, DecoderOptions};
 
-    let mut bytes = [0u8; 15];
-    unsafe {
-        std::ptr::copy_nonoverlapping(address as *const u8, bytes.as_mut_ptr(), bytes.len());
-    }
+    let (bytes, available_len) = read_decode_window_x86(address)?;
 
-    let mut decoder = Decoder::with_ip(64, &bytes, address, DecoderOptions::NONE);
+    let mut decoder = Decoder::with_ip(64, &bytes[..available_len], address, DecoderOptions::NONE);
     let instruction = decoder.decode();
     if instruction.is_invalid() {
         return Err(SigHookError::DecodeFailed);
     }
 
     Ok(instruction.len() as u8)
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+fn read_decode_window_x86(address: u64) -> Result<([u8; 15], usize), SigHookError> {
+    if address == 0 {
+        return Err(SigHookError::InvalidAddress);
+    }
+
+    let page_size = page_size()?;
+    let addr = address as usize;
+    let mut bytes = [0u8; 15];
+    let page_offset = addr % page_size;
+    let first_chunk_len = bytes.len().min(page_size - page_offset);
+    read_memory_chunk_x86(addr, &mut bytes[..first_chunk_len])?;
+
+    let mut total_len = first_chunk_len;
+    if first_chunk_len < bytes.len() {
+        let second_chunk_addr = addr
+            .checked_add(first_chunk_len)
+            .ok_or(SigHookError::InvalidAddress)?;
+        let second_chunk_len = bytes.len() - first_chunk_len;
+        if read_memory_chunk_x86(
+            second_chunk_addr,
+            &mut bytes[first_chunk_len..first_chunk_len + second_chunk_len],
+        )
+        .is_ok()
+        {
+            total_len += second_chunk_len;
+        }
+    }
+
+    Ok((bytes, total_len))
+}
+
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn read_memory_chunk_x86(address: usize, out: &mut [u8]) -> Result<(), SigHookError> {
+    if out.is_empty() {
+        return Ok(());
+    }
+
+    let local = libc::iovec {
+        iov_base: out.as_mut_ptr().cast::<c_void>(),
+        iov_len: out.len(),
+    };
+    let remote = libc::iovec {
+        iov_base: address as *mut c_void,
+        iov_len: out.len(),
+    };
+
+    let read_size = unsafe { libc::process_vm_readv(libc::getpid(), &local, 1, &remote, 1, 0) };
+    if read_size < 0 || read_size as usize != out.len() {
+        return Err(SigHookError::InvalidAddress);
+    }
+
+    Ok(())
+}
+
+#[cfg(all(target_arch = "x86_64", target_os = "macos"))]
+fn read_memory_chunk_x86(address: usize, out: &mut [u8]) -> Result<(), SigHookError> {
+    if out.is_empty() {
+        return Ok(());
+    }
+
+    let mut out_size: libc::mach_vm_size_t = 0;
+    let kr = unsafe {
+        mach_vm_read_overwrite(
+            libc::mach_task_self(),
+            address as libc::mach_vm_address_t,
+            out.len() as libc::mach_vm_size_t,
+            out.as_mut_ptr() as libc::mach_vm_address_t,
+            &mut out_size,
+        )
+    };
+    if kr != 0 || out_size as usize != out.len() {
+        return Err(SigHookError::InvalidAddress);
+    }
+
+    Ok(())
 }
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
@@ -350,6 +436,29 @@ pub(crate) fn encode_absolute_jump(to_address: u64) -> [u8; 14] {
 mod tests {
     use super::protect_range_start_len;
 
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    use super::{instruction_width, page_size};
+
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    use crate::error::SigHookError;
+
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    use libc::c_void;
+
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    fn map_two_pages(page_size: usize) -> *mut c_void {
+        unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                page_size * 2,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
+            )
+        }
+    }
+
     #[test]
     fn protect_range_single_page() {
         let page_size = 0x1000;
@@ -364,6 +473,76 @@ mod tests {
         let (start, len) = protect_range_start_len(0x1ffe, 8, page_size);
         assert_eq!(start, 0x1000);
         assert_eq!(len, 0x2000);
+    }
+
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn instruction_width_page_end_with_unmapped_next_page() {
+        let page_size = page_size().expect("page size should be available");
+        let mapping = map_two_pages(page_size);
+        assert_ne!(mapping, libc::MAP_FAILED);
+
+        let first_page_base = mapping as *mut u8;
+        let second_page = unsafe { first_page_base.add(page_size) } as *mut c_void;
+        assert_eq!(
+            unsafe { libc::mprotect(second_page, page_size, libc::PROT_NONE) },
+            0
+        );
+
+        let patchpoint = unsafe { first_page_base.add(page_size - 1) };
+        unsafe {
+            std::ptr::write_volatile(patchpoint, 0x90);
+        }
+
+        let len = instruction_width(patchpoint as u64).expect("decode should succeed");
+        assert_eq!(len, 1);
+
+        assert_eq!(unsafe { libc::munmap(mapping, page_size * 2) }, 0);
+    }
+
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn instruction_width_page_end_incomplete_instruction_returns_error() {
+        let page_size = page_size().expect("page size should be available");
+        let mapping = map_two_pages(page_size);
+        assert_ne!(mapping, libc::MAP_FAILED);
+
+        let first_page_base = mapping as *mut u8;
+        let second_page = unsafe { first_page_base.add(page_size) } as *mut c_void;
+        assert_eq!(
+            unsafe { libc::mprotect(second_page, page_size, libc::PROT_NONE) },
+            0
+        );
+
+        let patchpoint = unsafe { first_page_base.add(page_size - 1) };
+        unsafe {
+            std::ptr::write_volatile(patchpoint, 0x0F);
+        }
+
+        let err = instruction_width(patchpoint as u64).expect_err("decode should fail");
+        assert_eq!(err, SigHookError::DecodeFailed);
+
+        assert_eq!(unsafe { libc::munmap(mapping, page_size * 2) }, 0);
+    }
+
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn instruction_width_cross_page_when_next_page_readable() {
+        let page_size = page_size().expect("page size should be available");
+        let mapping = map_two_pages(page_size);
+        assert_ne!(mapping, libc::MAP_FAILED);
+
+        let first_page_base = mapping as *mut u8;
+        let patchpoint = unsafe { first_page_base.add(page_size - 2) };
+        let insn = [0xE9, 0x01, 0x00, 0x00, 0x00];
+        unsafe {
+            std::ptr::copy_nonoverlapping(insn.as_ptr(), patchpoint, insn.len());
+        }
+
+        let len = instruction_width(patchpoint as u64).expect("decode should succeed");
+        assert_eq!(len, 5);
+
+        assert_eq!(unsafe { libc::munmap(mapping, page_size * 2) }, 0);
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]

@@ -110,7 +110,7 @@ jobs:
         run: cargo check --all-targets --target x86_64-apple-darwin
 
       - name: Cargo test
-        run: cargo test --doc --target x86_64-apple-darwin
+        run: cargo test --target x86_64-apple-darwin
 
       - name: Cargo clippy
         run: cargo clippy --all-targets --target x86_64-apple-darwin -- -D warnings
@@ -191,7 +191,7 @@ jobs:
         run: cargo check --all-targets --target x86_64-unknown-linux-gnu
 
       - name: Cargo test
-        run: cargo test --doc --target x86_64-unknown-linux-gnu
+        run: cargo test --target x86_64-unknown-linux-gnu
 
       - name: Cargo clippy
         run: cargo clippy --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
