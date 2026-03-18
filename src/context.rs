@@ -223,13 +223,31 @@ const FPSIMD_MAGIC: u32 = 0x4650_8001;
 ))]
 #[repr(C)]
 #[derive(Copy, Clone)]
+struct LinuxAarch64Reserved {
+    bytes: [u8; 4096],
+}
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    target_arch = "aarch64"
+))]
+#[repr(C, align(16))]
+#[derive(Copy, Clone)]
+struct LinuxAarch64AlignedReserved(LinuxAarch64Reserved);
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    target_arch = "aarch64"
+))]
+#[repr(C)]
+#[derive(Copy, Clone)]
 struct LinuxAarch64MContext {
     fault_address: u64,
     regs: [u64; 31],
     sp: u64,
     pc: u64,
     pstate: u64,
-    reserved: [u64; 512],
+    reserved: LinuxAarch64AlignedReserved,
 }
 
 #[cfg(all(
@@ -271,9 +289,9 @@ unsafe fn linux_aarch64_mcontext(uc: *mut libc::ucontext_t) -> *mut LinuxAarch64
 unsafe fn linux_aarch64_fpsimd_context(
     mcontext: *mut LinuxAarch64MContext,
 ) -> Option<*mut LinuxAarch64FpsimdContext> {
-    let reserved = unsafe { &mut (*mcontext).reserved };
-    let base = reserved.as_mut_ptr().cast::<u8>();
-    let len = std::mem::size_of_val(reserved);
+    let reserved = unsafe { &mut (*mcontext).reserved.0.bytes };
+    let base = reserved.as_mut_ptr();
+    let len = reserved.len();
     let mut offset = 0usize;
 
     while offset + std::mem::size_of::<LinuxAarch64CtxHeader>() <= len {
