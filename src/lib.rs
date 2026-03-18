@@ -33,9 +33,9 @@ mod state;
 mod trampoline;
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-pub use context::{HookContext, InstrumentCallback};
+pub use context::{FpRegisters, HookContext, InstrumentCallback};
 #[cfg(target_arch = "aarch64")]
-pub use context::{HookContext, InstrumentCallback, XRegisters, XRegistersNamed};
+pub use context::{FpRegisters, HookContext, InstrumentCallback, XRegisters, XRegistersNamed};
 pub use error::SigHookError;
 
 /// Replaces one machine instruction at `address` with `new_opcode`.

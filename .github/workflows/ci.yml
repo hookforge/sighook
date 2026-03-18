@@ -78,6 +78,12 @@ jobs:
           echo "$OUT"
           [[ "$OUT" == *"target_add(6, 7) = 42"* ]]
 
+          cc -O0 -fno-inline examples/inline_hook_fpregs/target.c -o examples/inline_hook_fpregs/app
+          DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libinline_hook_fpregs.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/inline_hook_fpregs/app)
+          echo "$OUT"
+          [[ "$OUT" == *"target_vec_add = [42, 43, 44, 45]"* ]]
+
           cc -O0 -fno-inline examples/patchcode_add_to_mul/target.c -o examples/patchcode_add_to_mul/app
           DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libpatchcode_add_to_mul.dylib"
           OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/patchcode_add_to_mul/app)
@@ -115,13 +121,14 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --all-targets --target x86_64-apple-darwin -- -D warnings
 
-      - name: Build six base examples (macOS x86_64)
+      - name: Build seven base examples (macOS x86_64)
         run: |
           cargo build --example instrument_with_original --target x86_64-apple-darwin
           cargo build --example instrument_no_original --target x86_64-apple-darwin
           cargo build --example instrument_unhook_restore --target x86_64-apple-darwin
           cargo build --example inline_hook_far --target x86_64-apple-darwin
           cargo build --example inline_hook_signal --target x86_64-apple-darwin
+          cargo build --example inline_hook_fpregs --target x86_64-apple-darwin
           cargo build --example patchcode_add_to_mul --target x86_64-apple-darwin
 
       - name: Run macOS x86_64 base example smoke tests
@@ -159,6 +166,12 @@ jobs:
           OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/inline_hook_signal/app)
           echo "$OUT"
           [[ "$OUT" == *"target_add(6, 7) = 42"* ]]
+
+          cc -O0 -fno-inline examples/inline_hook_fpregs/target.c -o examples/inline_hook_fpregs/app
+          DYLIB="$PWD/target/x86_64-apple-darwin/debug/examples/libinline_hook_fpregs.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/inline_hook_fpregs/app)
+          echo "$OUT"
+          [[ "$OUT" == *"target_vec_add = [42, 43, 44, 45]"* ]]
 
           cc -O0 -fno-inline examples/patchcode_add_to_mul/target.c -o examples/patchcode_add_to_mul/app
           DYLIB="$PWD/target/x86_64-apple-darwin/debug/examples/libpatchcode_add_to_mul.dylib"
@@ -234,6 +247,12 @@ jobs:
           OUT=$(LD_PRELOAD="$SO" examples/inline_hook_signal/app)
           echo "$OUT"
           [[ "$OUT" == *"target_add(6, 7) = 42"* ]]
+
+          cc -O0 -fno-inline -mavx -rdynamic examples/inline_hook_fpregs/target.c -o examples/inline_hook_fpregs/app
+          SO="$PWD/target/x86_64-unknown-linux-gnu/debug/examples/libinline_hook_fpregs.so"
+          OUT=$(LD_PRELOAD="$SO" examples/inline_hook_fpregs/app)
+          echo "$OUT"
+          [[ "$OUT" == *"target_vec_add = [42, 43, 44, 45, 46, 47, 48, 49]"* ]]
 
           cc -O0 -fno-inline -rdynamic examples/patchcode_add_to_mul/target.c -o examples/patchcode_add_to_mul/app
           SO="$PWD/target/x86_64-unknown-linux-gnu/debug/examples/libpatchcode_add_to_mul.so"
@@ -321,6 +340,12 @@ jobs:
           OUT=$(LD_PRELOAD="$SO" examples/inline_hook_signal/app)
           echo "$OUT"
           [[ "$OUT" == *"target_add(6, 7) = 42"* ]]
+
+          cc -O0 -fno-inline -rdynamic examples/inline_hook_fpregs/target.c -o examples/inline_hook_fpregs/app
+          SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libinline_hook_fpregs.so"
+          OUT=$(LD_PRELOAD="$SO" examples/inline_hook_fpregs/app)
+          echo "$OUT"
+          [[ "$OUT" == *"target_vec_add = [42, 43, 44, 45]"* ]]
 
           cc -O0 -fno-inline -rdynamic examples/patchcode_add_to_mul/target.c -o examples/patchcode_add_to_mul/app
           SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libpatchcode_add_to_mul.so"

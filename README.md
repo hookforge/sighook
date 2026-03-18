@@ -23,8 +23,8 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 - `inline_hook(addr, callback)` for signal-based function-entry hooks
 - `inline_hook_jump(addr, replace_fn)` with automatic far-jump fallback
 - `unhook(address)` to restore bytes and remove hook runtime state
-- zero-copy context remap (`HookContext`) in callbacks
-- architecture-specific callback context (`aarch64` and `x86_64` layouts)
+- callback context (`HookContext`) in callbacks
+- architecture-specific callback context (`aarch64` and `x86_64` layouts), including FP/SIMD state via `ctx.fpregs`
 
 ## Platform Support
 
@@ -232,6 +232,9 @@ iOS executable pages are code-signed. In normal (non-jailbreak) runtime environm
 - `instrument(...)` executes original instruction through an internal trampoline.
 - `instrument(...)` should not be used for PC-relative patch points (for example: `aarch64` `adr`/`adrp`, or `x86_64` RIP-relative `lea`/`mov`).
 - `instrument_no_original(...)` skips original instruction unless callback changes control-flow register (`pc`/`rip`). For PC-relative patch points, prefer this API and emulate the instruction in callback.
+- `HookContext` exposes FP/SIMD state in `ctx.fpregs`:
+  - `aarch64`: `fpregs.v[0..31]` / `fpsr` / `fpcr`
+  - `x86_64`: x87 `st`, `xmm[0..15]`, `mxcsr`; Linux also maps `ymm` high halves when the signal frame carries AVX XSAVE state
 - `prepatched::*` APIs assume the address is already trap-patched offline (`brk`/`int3`) and do not write executable pages at runtime.
 - `prepatched::instrument(...)` needs original opcode metadata to execute original instruction (on `aarch64`, preload with `prepatched::cache_original_opcode(...)`).
 - `prepatched::instrument(...)` execute-original mode is currently unsupported on `x86_64`; use `prepatched::instrument_no_original(...)`.

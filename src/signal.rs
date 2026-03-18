@@ -115,7 +115,7 @@ unsafe fn chain_previous(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
 extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c_void) {
-    use crate::context::remap_ctx;
+    use crate::context::{free_ctx, remap_ctx, write_back_ctx};
     use crate::memory::{is_brk, read_u32};
 
     if info.is_null() || uctx.is_null() {
@@ -133,14 +133,22 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
         return;
     }
 
-    let raw_ss = unsafe { &mut (*uc.uc_mcontext).__ss };
-    let ctx_ptr = unsafe { remap_ctx(raw_ss as *mut libc::__darwin_arm_thread_state64) };
+    let uc_ptr = uctx as *mut libc::ucontext_t;
+    let ctx_ptr = unsafe { remap_ctx(uc_ptr) };
+    if ctx_ptr.is_null() {
+        unsafe {
+            chain_previous(signum, info, uctx);
+        }
+        return;
+    }
+
     let ctx = unsafe { &mut *ctx_ptr };
     let trap_address = ctx.pc;
 
     let opcode = read_u32(trap_address);
     if !is_brk(opcode) {
         unsafe {
+            free_ctx(ctx_ptr);
             chain_previous(signum, info, uctx);
         }
         return;
@@ -157,8 +165,15 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
 
     if !handled {
         unsafe {
+            free_ctx(ctx_ptr);
             chain_previous(signum, info, uctx);
         }
+        return;
+    }
+
+    unsafe {
+        write_back_ctx(uc_ptr, ctx_ptr);
+        free_ctx(ctx_ptr);
     }
 }
 

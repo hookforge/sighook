@@ -73,6 +73,11 @@ name = "inline_hook_signal"
 path = "examples/inline_hook_signal/main.rs"
 crate-type = ["cdylib"]
 
+[[example]]
+name = "inline_hook_fpregs"
+path = "examples/inline_hook_fpregs/main.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 libc = "0.2"
 
