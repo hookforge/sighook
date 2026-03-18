@@ -30,14 +30,19 @@ extern "C" fn replace_in_callback(_address: u64, ctx: *mut HookContext) {
 
         #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
         {
-            (*ctx).fpregs.xmm[0] = encode_i32x4([42, 43, 44, 45]);
+            (*ctx).fpregs.xmm.named.xmm0 = encode_i32x4([42, 43, 44, 45]);
         }
 
         #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
         {
+            let value = encode_i32x8([42, 43, 44, 45, 46, 47, 48, 49]);
+            (*ctx).fpregs.xmm.named.xmm0.copy_from_slice(&value[..16]);
             (*ctx)
                 .fpregs
-                .set_ymm(0, encode_i32x8([42, 43, 44, 45, 46, 47, 48, 49]));
+                .ymm_hi
+                .named
+                .ymm0_hi
+                .copy_from_slice(&value[16..]);
         }
     }
 }

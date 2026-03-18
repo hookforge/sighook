@@ -236,7 +236,7 @@ iOS executable pages are code-signed. In normal (non-jailbreak) runtime environm
 - `instrument_no_original(...)` skips original instruction unless callback changes control-flow register (`pc`/`rip`).
 - `HookContext` exposes FP/SIMD state in `ctx.fpregs`:
   - `aarch64`: `fpregs.v[0..31]` or `fpregs.regs.named.v0..v31`, plus `fpsr` / `fpcr`
-  - `x86_64`: x87 `st`, `xmm[0..15]`, `mxcsr`; Linux also maps `ymm` high halves when the signal frame carries AVX XSAVE state
+  - `x86_64`: `fpregs.st[0..7]` or `fpregs.st.named.st0..st7`, `fpregs.xmm[0..15]` or `fpregs.xmm.named.xmm0..xmm15`, plus `mxcsr`; Linux also maps `fpregs.ymm_hi[0..15]` or `fpregs.ymm_hi.named.ymm0_hi..ymm15_hi`
 - `prepatched::*` APIs assume the address is already trap-patched offline (`brk`/`int3`) and do not write executable pages at runtime.
 - `prepatched::instrument(...)` needs original opcode metadata to execute original instruction (on `aarch64`, preload with `prepatched::cache_original_opcode(...)`).
 - `prepatched::instrument(...)` execute-original mode is currently unsupported on `x86_64`; use `prepatched::instrument_no_original(...)`.

@@ -35,7 +35,10 @@ mod state;
 mod trampoline;
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-pub use context::{FpRegisters, HookContext, InstrumentCallback};
+pub use context::{
+    FpRegisters, HookContext, InstrumentCallback, StRegisters, StRegistersNamed, XmmRegisters,
+    XmmRegistersNamed, YmmHiRegisters, YmmHiRegistersNamed,
+};
 #[cfg(target_arch = "aarch64")]
 pub use context::{
     FpRegisters, HookContext, InstrumentCallback, VRegisters, VRegistersNamed, XRegisters,

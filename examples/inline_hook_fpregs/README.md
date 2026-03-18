@@ -4,7 +4,7 @@ Demonstrates `sighook::inline_hook` with FP/SIMD return registers via `ctx.fpreg
 
 - `aarch64`: callback writes a replacement vector into `v0`
 - `x86_64 macOS`: callback writes a replacement vector into `xmm0`
-- `x86_64 Linux`: callback writes a replacement vector into `ymm0`
+- `x86_64 Linux`: callback writes a replacement vector into `xmm0` plus `ymm0_hi`
 
 ## Run (from repository root)
 

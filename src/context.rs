@@ -11,7 +11,10 @@
 //! This is also where FP/SIMD state is normalized across Darwin and Linux, including
 //! Linux x86_64 AVX high halves and Linux AArch64 FPSIMD extension records.
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos"))
+))]
 use std::ops::{Deref, DerefMut};
 
 #[cfg(target_arch = "aarch64")]
@@ -145,6 +148,136 @@ pub struct HookContext {
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct StRegistersNamed {
+    pub st0: [u8; 16],
+    pub st1: [u8; 16],
+    pub st2: [u8; 16],
+    pub st3: [u8; 16],
+    pub st4: [u8; 16],
+    pub st5: [u8; 16],
+    pub st6: [u8; 16],
+    pub st7: [u8; 16],
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union StRegisters {
+    pub regs: [[u8; 16]; 8],
+    pub named: StRegistersNamed,
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+impl Deref for StRegisters {
+    type Target = [[u8; 16]; 8];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &self.regs }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+impl DerefMut for StRegisters {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut self.regs }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct XmmRegistersNamed {
+    pub xmm0: [u8; 16],
+    pub xmm1: [u8; 16],
+    pub xmm2: [u8; 16],
+    pub xmm3: [u8; 16],
+    pub xmm4: [u8; 16],
+    pub xmm5: [u8; 16],
+    pub xmm6: [u8; 16],
+    pub xmm7: [u8; 16],
+    pub xmm8: [u8; 16],
+    pub xmm9: [u8; 16],
+    pub xmm10: [u8; 16],
+    pub xmm11: [u8; 16],
+    pub xmm12: [u8; 16],
+    pub xmm13: [u8; 16],
+    pub xmm14: [u8; 16],
+    pub xmm15: [u8; 16],
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union XmmRegisters {
+    pub regs: [[u8; 16]; 16],
+    pub named: XmmRegistersNamed,
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+impl Deref for XmmRegisters {
+    type Target = [[u8; 16]; 16];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &self.regs }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+impl DerefMut for XmmRegisters {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut self.regs }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct YmmHiRegistersNamed {
+    pub ymm0_hi: [u8; 16],
+    pub ymm1_hi: [u8; 16],
+    pub ymm2_hi: [u8; 16],
+    pub ymm3_hi: [u8; 16],
+    pub ymm4_hi: [u8; 16],
+    pub ymm5_hi: [u8; 16],
+    pub ymm6_hi: [u8; 16],
+    pub ymm7_hi: [u8; 16],
+    pub ymm8_hi: [u8; 16],
+    pub ymm9_hi: [u8; 16],
+    pub ymm10_hi: [u8; 16],
+    pub ymm11_hi: [u8; 16],
+    pub ymm12_hi: [u8; 16],
+    pub ymm13_hi: [u8; 16],
+    pub ymm14_hi: [u8; 16],
+    pub ymm15_hi: [u8; 16],
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union YmmHiRegisters {
+    pub regs: [[u8; 16]; 16],
+    pub named: YmmHiRegistersNamed,
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+impl Deref for YmmHiRegisters {
+    type Target = [[u8; 16]; 16];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &self.regs }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+impl DerefMut for YmmHiRegisters {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut self.regs }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct FpRegisters {
     pub fcw: u16,
     pub fsw: u16,
@@ -152,9 +285,9 @@ pub struct FpRegisters {
     pub fop: u16,
     pub mxcsr: u32,
     pub mxcsr_mask: u32,
-    pub st: [[u8; 16]; 8],
-    pub xmm: [[u8; 16]; 16],
-    pub ymm_hi: [[u8; 16]; 16],
+    pub st: StRegisters,
+    pub xmm: XmmRegisters,
+    pub ymm_hi: YmmHiRegisters,
 }
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
@@ -777,7 +910,7 @@ fn read_linux_x86_fpregs(fpstate: *const LinuxX86FpState) -> FpRegisters {
     // state.
     if let Some(ymmh) = unsafe { linux_x86_ymmh_state(fpstate as *const _ as *mut _) } {
         let ymmh = unsafe { &*ymmh };
-        fpregs.ymm_hi = ymmh.ymmh_space;
+        fpregs.ymm_hi.regs = ymmh.ymmh_space;
     }
 
     fpregs
@@ -808,7 +941,7 @@ fn write_linux_x86_fpregs(fpstate: *mut LinuxX86FpState, fpregs: &FpRegisters) {
 
     if let Some(ymmh) = unsafe { linux_x86_ymmh_state(fpstate) } {
         unsafe {
-            (*ymmh).ymmh_space = fpregs.ymm_hi;
+            (*ymmh).ymmh_space = fpregs.ymm_hi.regs;
         }
     }
 }
@@ -879,6 +1012,54 @@ pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
 pub unsafe fn free_ctx(ctx: *mut HookContext) {
     if !ctx.is_null() {
         let _ = unsafe { Box::from_raw(ctx) };
+    }
+}
+
+#[cfg(all(
+    test,
+    target_arch = "x86_64",
+    any(target_os = "linux", target_os = "macos")
+))]
+mod x86_tests {
+    use super::{FpRegisters, StRegisters, XmmRegisters, YmmHiRegisters, zeroed_fpregs};
+
+    #[test]
+    fn x86_fpreg_named_and_array_views_alias() {
+        let mut fpregs: FpRegisters = zeroed_fpregs();
+
+        unsafe {
+            fpregs.xmm.named.xmm0 = [0x11; 16];
+            assert_eq!(fpregs.xmm.regs[0], [0x11; 16]);
+
+            fpregs.ymm_hi.named.ymm0_hi = [0x22; 16];
+            assert_eq!(fpregs.ymm_hi.regs[0], [0x22; 16]);
+
+            fpregs.st.regs[1] = [0x33; 16];
+            assert_eq!(fpregs.st.named.st1, [0x33; 16]);
+        }
+    }
+
+    #[test]
+    fn x86_fpreg_ymm_helpers_still_operate_on_split_storage() {
+        let mut fpregs = FpRegisters {
+            fcw: 0,
+            fsw: 0,
+            ftw: 0,
+            fop: 0,
+            mxcsr: 0,
+            mxcsr_mask: 0,
+            st: StRegisters { regs: [[0; 16]; 8] },
+            xmm: XmmRegisters {
+                regs: [[0; 16]; 16],
+            },
+            ymm_hi: YmmHiRegisters {
+                regs: [[0; 16]; 16],
+            },
+        };
+
+        let ymm = [0x44; 32];
+        fpregs.set_ymm(0, ymm);
+        assert_eq!(fpregs.ymm(0), ymm);
     }
 }
 
