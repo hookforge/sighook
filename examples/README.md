@@ -31,6 +31,7 @@ Available examples:
 - `instrument_no_original`: BRK instrumentation + skip original opcode
 - `instrument_unhook_restore`: install instruction hook, then unhook and verify original behavior
 - `instrument_adrp_no_original`: aarch64 `adrp` patch-point via `instrument_no_original` + manual callback emulation
+- `instrument_adrp_with_original`: aarch64 `adrp` patch-point via `instrument(...)` + automatic replay
 - `inline_hook_signal`: function-entry signal hook; callback writes return value and returns to caller
 - `inline_hook_fpregs`: function-entry signal hook; callback writes FP/SIMD return registers (`v0` / `xmm0` / `ymm0`)
 - `inline_hook_far`: function-entry detour with `inline_hook_jump`
@@ -40,7 +41,7 @@ Available examples:
 - `aarch64-apple-darwin`: `patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_fpregs` / `inline_hook_jump`
 - `aarch64-apple-darwin`: plus optional `patch_asm` smoke (`--features patch_asm`)
 - `x86_64-apple-darwin`: runtime smoke coverage for 7 base examples (CI), plus optional `patch_asm` build
-- `aarch64-unknown-linux-gnu`: runtime smoke coverage for all 8 core examples (CI, includes `instrument_adrp_no_original`)
+- `aarch64-unknown-linux-gnu`: runtime smoke coverage for all 9 core examples (CI, includes `instrument_adrp_no_original` and `instrument_adrp_with_original`)
 - `aarch64-unknown-linux-gnu`: plus optional `patch_asm` smoke (`--features patch_asm`)
 - `x86_64-unknown-linux-gnu`: runtime smoke coverage for 7 base examples (CI), plus optional `patch_asm` smoke (`--features patch_asm`)
 
@@ -48,6 +49,7 @@ Available examples:
 
 - On `aarch64-unknown-linux-gnu`, `calc` examples expose dedicated patchpoint symbols (`calc_add_insn` and `calc_adrp_insn`) and resolve patch points by symbol (no fixed offset dependency).
 - `instrument_adrp_no_original` demonstrates `adrp` interception via `instrument_no_original` and manual callback emulation.
+- `instrument_adrp_with_original` demonstrates `instrument(...)` replaying a displaced `adrp` patch point directly.
 - On `aarch64-apple-darwin`, `calc` examples keep fixed `ADD_INSN_OFFSET=0x14` for the naked function layout.
 - On `x86_64-unknown-linux-gnu`, `calc` examples use fixed offsets in dedicated assembly stubs (`instrument*`: `+0x4`, `patchcode_add_to_mul`: `+0x6`). `patchcode_add_to_mul` patches `add eax, edx; nop; nop` into one-operand `imul edx` (result in `eax`).
 - `patch_asm_add_to_mul` uses equivalent patches via assembly text (`aarch64`: `mul w0, w8, w9`; `x86_64`: `imul %edx`).

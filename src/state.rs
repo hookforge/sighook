@@ -1,6 +1,8 @@
 use crate::constants::MAX_INSTRUMENTS;
 use crate::context::InstrumentCallback;
 use crate::error::SigHookError;
+#[cfg(target_arch = "aarch64")]
+use crate::replay::ReplayPlan;
 use crate::trampoline;
 
 #[derive(Copy, Clone)]
@@ -15,6 +17,8 @@ pub(crate) struct InstrumentSlot {
     pub return_to_caller: bool,
     pub runtime_patch_installed: bool,
     pub trampoline_pc: u64,
+    #[cfg(target_arch = "aarch64")]
+    pub replay_plan: ReplayPlan,
 }
 
 impl InstrumentSlot {
@@ -29,6 +33,8 @@ impl InstrumentSlot {
         return_to_caller: false,
         runtime_patch_installed: false,
         trampoline_pc: 0,
+        #[cfg(target_arch = "aarch64")]
+        replay_plan: ReplayPlan::Skip,
     };
 }
 
@@ -101,11 +107,13 @@ pub(crate) unsafe fn remove_slot(address: u64) -> Option<InstrumentSlot> {
     Some(slot)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn register_slot(
     address: u64,
     original_bytes: &[u8],
     step_len: u8,
     callback: InstrumentCallback,
+    #[cfg(target_arch = "aarch64")] replay_plan: ReplayPlan,
     execute_original: bool,
     return_to_caller: bool,
     runtime_patch_installed: bool,
@@ -121,6 +129,10 @@ pub(crate) unsafe fn register_slot(
         let mut slot = unsafe { SLOTS[index] };
 
         slot.callback = Some(callback);
+        #[cfg(target_arch = "aarch64")]
+        {
+            slot.replay_plan = replay_plan;
+        }
         slot.execute_original = execute_original;
         slot.return_to_caller = return_to_caller;
         slot.runtime_patch_installed |= runtime_patch_installed;
@@ -131,7 +143,12 @@ pub(crate) unsafe fn register_slot(
             slot.step_len = step_len;
         }
 
-        if execute_original && slot.trampoline_pc == 0 {
+        #[cfg(target_arch = "aarch64")]
+        let needs_trampoline = replay_plan.requires_trampoline();
+        #[cfg(not(target_arch = "aarch64"))]
+        let needs_trampoline = execute_original;
+
+        if needs_trampoline && slot.trampoline_pc == 0 {
             slot.trampoline_pc = trampoline::create_original_trampoline(
                 address,
                 &slot.original_bytes[..slot.original_len as usize],
@@ -149,7 +166,12 @@ pub(crate) unsafe fn register_slot(
     let mut index = 0;
     while index < MAX_INSTRUMENTS {
         if !(unsafe { SLOTS[index].used }) {
-            let trampoline_pc = if execute_original {
+            #[cfg(target_arch = "aarch64")]
+            let needs_trampoline = replay_plan.requires_trampoline();
+            #[cfg(not(target_arch = "aarch64"))]
+            let needs_trampoline = execute_original;
+
+            let trampoline_pc = if needs_trampoline {
                 trampoline::create_original_trampoline(address, original_bytes, step_len)?
             } else {
                 0
@@ -167,6 +189,8 @@ pub(crate) unsafe fn register_slot(
                     return_to_caller,
                     runtime_patch_installed,
                     trampoline_pc,
+                    #[cfg(target_arch = "aarch64")]
+                    replay_plan,
                 };
             }
             return Ok(());

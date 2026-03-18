@@ -229,9 +229,11 @@ iOS executable pages are code-signed. In normal (non-jailbreak) runtime environm
 
 ## API Notes
 
-- `instrument(...)` executes original instruction through an internal trampoline.
-- `instrument(...)` should not be used for PC-relative patch points (for example: `aarch64` `adr`/`adrp`, or `x86_64` RIP-relative `lea`/`mov`).
-- `instrument_no_original(...)` skips original instruction unless callback changes control-flow register (`pc`/`rip`). For PC-relative patch points, prefer this API and emulate the instruction in callback.
+- `instrument(...)` executes original instruction through an internal trampoline when needed.
+- On `aarch64`, `instrument(...)` precomputes direct replay for common displaced PC-relative instructions: `adr`, `adrp`, literal `ldr` / `ldrsw` / `prfm`, `b` / `bl` / `b.cond`, `cbz` / `cbnz`, and `tbz` / `tbnz`.
+- Other `aarch64` PC-relative forms are still not guaranteed safe in execute-original mode. For those patch points, prefer `instrument_no_original(...)` and emulate the original instruction in callback.
+- On `x86_64`, RIP-relative execute-original patch points are still unsupported (for example `lea` / `mov` using `[rip + disp]`).
+- `instrument_no_original(...)` skips original instruction unless callback changes control-flow register (`pc`/`rip`).
 - `HookContext` exposes FP/SIMD state in `ctx.fpregs`:
   - `aarch64`: `fpregs.v[0..31]` / `fpsr` / `fpcr`
   - `x86_64`: x87 `st`, `xmm[0..15]`, `mxcsr`; Linux also maps `ymm` high halves when the signal frame carries AVX XSAVE state
