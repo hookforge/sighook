@@ -42,61 +42,75 @@ pub(crate) enum ReplayPlan {
     /// The callback is considered the complete replacement. If it does not redirect
     /// control flow, execution simply advances to the next instruction.
     Skip,
+
     /// Used for instructions that are not replayed directly.
     ///
     /// This preserves the old execute-original behavior: an out-of-line trampoline
     /// runs a copy of the displaced bytes and then returns to the original stream.
     Trampoline,
+
     /// `adr xd, label`
     ///
     /// Replay computes the exact absolute address the instruction would have written
     /// if it had executed in place at the original patch address.
     Adr { rd: u8, absolute: u64 },
+
     /// `adrp xd, label`
     ///
     /// Replay stores the resolved 4 KiB page base, not the page delta. That keeps
     /// the trap path simple and avoids recomputing anything from instruction bits.
     Adrp { rd: u8, page_base: u64 },
+
     /// `ldr wt, label`
     ///
     /// Replay reads 32 bits from the resolved literal address and applies the same
     /// architectural zero-extension into `xT` that hardware would perform.
     LdrLiteralW { rt: u8, literal_address: u64 },
+
     /// `ldr xt, label`
     LdrLiteralX { rt: u8, literal_address: u64 },
+
     /// `ldr st, label`
     ///
     /// AArch64 scalar `sT` is the low 32-bit view of vector register `vT`, and the
     /// upper 96 bits are architecturally cleared by a scalar load. Replay mirrors
     /// that exact behavior.
     LdrLiteralS { rt: u8, literal_address: u64 },
+
     /// `ldr dt, label`
     ///
     /// This writes the low 64 bits of `vT` and clears the high 64 bits.
     LdrLiteralD { rt: u8, literal_address: u64 },
+
     /// `ldr qt, label`
     LdrLiteralQ { rt: u8, literal_address: u64 },
+
     /// `ldrsw xt, label`
     ///
     /// Replay sign-extends the loaded 32-bit value to 64 bits before writing `xT`.
     LdrswLiteral { rt: u8, literal_address: u64 },
+
     /// `prfm <op>, label`
     ///
     /// `prfm` is only a hint. Architecturally it does not modify the visible
     /// register or memory state, so replay only needs to advance `pc`.
     PrfmLiteral { literal_address: u64 },
+
     /// `b label`
     Branch { target: u64 },
+
     /// `bl label`
     ///
     /// Replay must update `x30` (`lr`) to the sequential next instruction before
     /// transferring control to the branch target.
     BranchWithLink { target: u64 },
+
     /// `b.<cond> label`
     ///
     /// The condition code is stored as the raw 4-bit field from the instruction.
     /// Replay evaluates it against `ctx.cpsr`.
     ConditionalBranch { cond: u8, target: u64 },
+
     /// `cbz` / `cbnz`
     ///
     /// Replay stores whether the source register should be viewed as a 32-bit or
@@ -108,6 +122,7 @@ pub(crate) enum ReplayPlan {
         branch_on_zero: bool,
         is_64bit: bool,
     },
+
     /// `tbz` / `tbnz`
     ///
     /// AArch64 encodes the tested bit index partly in the high `b5` bit and partly

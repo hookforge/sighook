@@ -1,3 +1,16 @@
+//! Signal-frame to `HookContext` remapping for each supported platform.
+//!
+//! The trap handler works with a normalized `HookContext` instead of exposing raw
+//! `ucontext_t` layouts to callbacks. Each platform section in this file therefore
+//! performs the same three-step translation:
+//!
+//! 1. copy machine state out of the native signal frame,
+//! 2. present it through the crate-defined register layout,
+//! 3. write the final callback-mutated state back to the native frame.
+//!
+//! This is also where FP/SIMD state is normalized across Darwin and Linux, including
+//! Linux x86_64 AVX high halves and Linux AArch64 FPSIMD extension records.
+
 #[cfg(target_arch = "aarch64")]
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -145,11 +158,15 @@ pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
     let ss = unsafe { &(*mcontext).__ss };
     let ns = unsafe { &(*mcontext).__ns };
 
+    // Darwin stores x0..x28 in `__x`, while x29/x30 live in dedicated frame-pointer
+    // and link-register fields. Normalize that split layout back into one flat array.
     let mut regs = [0u64; 31];
     regs[..29].copy_from_slice(&ss.__x);
     regs[29] = ss.__fp;
     regs[30] = ss.__lr;
 
+    // Darwin's NEON/SIMD block is already contiguous, so we can copy the 32 vector
+    // registers directly into `HookContext`.
     let mut fpregs = zeroed_fpregs();
     unsafe {
         std::ptr::copy_nonoverlapping(ns.__v.as_ptr().cast::<u128>(), fpregs.v.as_mut_ptr(), 32);
@@ -215,6 +232,9 @@ pub unsafe fn free_ctx(ctx: *mut HookContext) {
     any(target_os = "linux", target_os = "android"),
     target_arch = "aarch64"
 ))]
+// Linux AArch64 stores optional context records, including FPSIMD state, inside the
+// `reserved` tail of the machine context. The record stream is self-describing via
+// `(magic, size)` headers.
 const FPSIMD_MAGIC: u32 = 0x4650_8001;
 
 #[cfg(all(
@@ -294,6 +314,8 @@ unsafe fn linux_aarch64_fpsimd_context(
     let len = reserved.len();
     let mut offset = 0usize;
 
+    // Walk the variable-length extension-record stream until we either find the
+    // FPSIMD block or encounter a terminating / malformed header.
     while offset + std::mem::size_of::<LinuxAarch64CtxHeader>() <= len {
         let head = unsafe { &*base.add(offset).cast::<LinuxAarch64CtxHeader>() };
         if head.magic == 0 || head.size == 0 {
@@ -323,6 +345,8 @@ pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
     let mcontext = unsafe { linux_aarch64_mcontext(uc) };
     let mut fpregs = zeroed_fpregs();
 
+    // The kernel may omit FPSIMD state in some frames. We still produce a valid
+    // `HookContext`; FP/SIMD state simply remains zero-initialized in that case.
     if let Some(fpsimd) = unsafe { linux_aarch64_fpsimd_context(mcontext) } {
         let fpsimd = unsafe { &*fpsimd };
         fpregs.v = fpsimd.vregs;
@@ -382,6 +406,8 @@ pub unsafe fn free_ctx(ctx: *mut HookContext) {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+// Darwin's public float-state types are awkward to use directly, so we mirror the
+// relevant kernel layout here and normalize it into `FpRegisters`.
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct DarwinX86FloatState64 {
@@ -431,6 +457,8 @@ fn read_darwin_x86_fpregs(fs: *const DarwinX86FloatState64) -> FpRegisters {
     fpregs.mxcsr = fs.fpu_mxcsr;
     fpregs.mxcsr_mask = fs.fpu_mxcsrmask;
 
+    // x87 registers are 80-bit values. We preserve those 10 bytes and explicitly
+    // clear the remaining tail bytes in our 16-byte storage slots.
     for (idx, stmm) in fs.stmm.iter().enumerate() {
         copy_from_bytes(&mut fpregs.st[idx], stmm.__mmst_reg.as_ptr().cast::<u8>());
         copy_to_bytes(fpregs.st[idx][10..].as_mut_ptr(), &[0u8; 6]);
@@ -535,6 +563,7 @@ pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+// XSAVE metadata used to discover whether a signal frame carries AVX YMM high halves.
 const FP_XSTATE_MAGIC1: u32 = 0x4650_5853;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const FP_XSTATE_MAGIC2: u32 = 0x4650_5845;
@@ -625,6 +654,8 @@ unsafe fn linux_x86_ymmh_state(fpstate: *mut LinuxX86FpState) -> Option<*mut Lin
         return None;
     }
 
+    // Validate both the XSAVE payload size and the enclosing extended buffer size
+    // before trusting any embedded offsets.
     let required_xstate = std::mem::size_of::<LinuxX86FpState>()
         + std::mem::size_of::<LinuxX86XSaveHeader>()
         + std::mem::size_of::<LinuxX86YmmhState>();
@@ -672,6 +703,9 @@ fn read_linux_x86_fpregs(fpstate: *const LinuxX86FpState) -> FpRegisters {
         fpregs.xmm[idx] = xmm.bytes;
     }
 
+    // If the frame exposes AVX state, pull in the upper 128 bits of each YMM
+    // register; otherwise the zero-initialized default correctly represents SSE-only
+    // state.
     if let Some(ymmh) = unsafe { linux_x86_ymmh_state(fpstate as *const _ as *mut _) } {
         let ymmh = unsafe { &*ymmh };
         fpregs.ymm_hi = ymmh.ymmh_space;
