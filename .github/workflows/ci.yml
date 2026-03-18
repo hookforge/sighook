@@ -329,6 +329,12 @@ jobs:
           echo "$OUT"
           [[ "$OUT" == *"calc(5, 7) = 42"* ]]
 
+          cc -O0 -fno-inline -rdynamic examples/instrument_adrp_with_original/target.c -o examples/instrument_adrp_with_original/app
+          SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libinstrument_adrp_with_original.so"
+          OUT=$(LD_PRELOAD="$SO" examples/instrument_adrp_with_original/app)
+          echo "$OUT"
+          [[ "$OUT" == *"calc(5, 7) = 72"* ]]
+
           cc -O0 -fno-inline -rdynamic examples/inline_hook_far/target.c -o examples/inline_hook_far/app
           SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libinline_hook_far.so"
           OUT=$(LD_PRELOAD="$SO" examples/inline_hook_far/app)

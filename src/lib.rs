@@ -28,6 +28,8 @@ mod constants;
 mod context;
 mod error;
 mod memory;
+#[cfg(target_arch = "aarch64")]
+mod replay;
 mod signal;
 mod state;
 mod trampoline;
@@ -201,15 +203,17 @@ pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
 ///
 /// # PC-relative note
 ///
-/// Across architectures, this API does **not** support patch points whose original
-/// instruction is PC-relative.
+/// On `aarch64`, this API precomputes direct replay plans for common displaced
+/// PC-relative instructions, including `adr`, `adrp`, literal `ldr`/`ldrsw`/`prfm`,
+/// `b`/`bl`/`b.cond`, `cbz`/`cbnz`, and `tbz`/`tbnz`.
 ///
-/// Examples include `aarch64` `adr`/`adrp`, and `x86_64` RIP-relative forms such as
-/// `lea` or `mov` using `[rip + disp]`. These instructions can observe a different
-/// `pc`/`rip` when replayed by the trampoline, which may produce incorrect behavior.
+/// Other `aarch64` PC-relative forms are still not guaranteed safe in
+/// execute-original mode. For unsupported patch points, prefer
+/// [`instrument_no_original`] and emulate the original instruction semantics
+/// manually in your callback.
 ///
-/// For such patch points, prefer [`instrument_no_original`], and emulate the original
-/// instruction semantics manually in your callback (typically using `ctx.pc`/`ctx.rip`).
+/// On `x86_64`, RIP-relative patch points are still unsupported in execute-original
+/// mode. Examples include `lea` or `mov` using `[rip + disp]`.
 ///
 /// Returns the original 4-byte value previously stored at `address`.
 ///
@@ -385,18 +389,31 @@ fn instrument_internal(
 ) -> Result<u32, SigHookError> {
     unsafe {
         if let Some((bytes, len)) = state::original_bytes_by_address(address) {
+            #[cfg(target_arch = "aarch64")]
+            let original_opcode = state::cached_original_opcode_by_address(address)
+                .or_else(|| state::original_opcode_by_address(address))
+                .ok_or(SigHookError::InvalidAddress)?;
+            #[cfg(target_arch = "aarch64")]
+            let replay_plan =
+                replay::decode_replay_plan(address, original_opcode, execute_original);
+
             state::register_slot(
                 address,
                 &bytes[..len as usize],
                 len,
                 callback,
+                #[cfg(target_arch = "aarch64")]
+                replay_plan,
                 execute_original,
                 return_to_caller,
                 matches!(install_mode, InstrumentInstallMode::RuntimePatch),
             )?;
+
+            #[cfg(not(target_arch = "aarch64"))]
             let original_opcode = state::cached_original_opcode_by_address(address)
                 .or_else(|| state::original_opcode_by_address(address))
                 .ok_or(SigHookError::InvalidAddress)?;
+
             return Ok(original_opcode);
         }
 
@@ -462,11 +479,16 @@ fn instrument_internal(
             }
         };
 
+        #[cfg(target_arch = "aarch64")]
+        let replay_plan = replay::decode_replay_plan(address, original_opcode, execute_original);
+
         let register_result = state::register_slot(
             address,
             &original_bytes,
             step_len,
             callback,
+            #[cfg(target_arch = "aarch64")]
+            replay_plan,
             execute_original,
             return_to_caller,
             runtime_patch_installed,

@@ -1,6 +1,8 @@
 use crate::context::InstrumentCallback;
 use crate::error::SigHookError;
 use crate::memory::last_errno;
+#[cfg(target_arch = "aarch64")]
+use crate::replay::ReplayPlan;
 use crate::state;
 use core::mem::MaybeUninit;
 use libc::{c_int, c_void};
@@ -154,14 +156,7 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
         return;
     }
 
-    let handled = handle_trap_aarch64(trap_address, ctx_ptr, |ctx_ptr, next_pc, trampoline_pc| {
-        let ctx = unsafe { &mut *ctx_ptr };
-        if trampoline_pc != 0 {
-            ctx.pc = trampoline_pc;
-        } else {
-            ctx.pc = next_pc;
-        }
-    });
+    let handled = handle_trap_aarch64(trap_address, ctx_ptr);
 
     if !handled {
         unsafe {
@@ -206,14 +201,7 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
         return;
     }
 
-    let handled = handle_trap_aarch64(trap_address, ctx_ptr, |ctx_ptr, next_pc, trampoline_pc| {
-        let ctx = unsafe { &mut *ctx_ptr };
-        if trampoline_pc != 0 {
-            ctx.pc = trampoline_pc;
-        } else {
-            ctx.pc = next_pc;
-        }
-    });
+    let handled = handle_trap_aarch64(trap_address, ctx_ptr);
 
     if !handled {
         unsafe {
@@ -294,11 +282,7 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
 }
 
 #[cfg(target_arch = "aarch64")]
-fn handle_trap_aarch64(
-    address: u64,
-    ctx_ptr: *mut crate::context::HookContext,
-    set_pc: impl FnOnce(*mut crate::context::HookContext, u64, u64),
-) -> bool {
+fn handle_trap_aarch64(address: u64, ctx_ptr: *mut crate::context::HookContext) -> bool {
     let slot = unsafe { state::slot_by_address(address) };
     let slot = match slot {
         Some(slot) => slot,
@@ -324,14 +308,23 @@ fn handle_trap_aarch64(
         return true;
     }
 
-    let next_pc = address.wrapping_add(slot.step_len as u64);
-    let trampoline_pc = if slot.execute_original {
-        slot.trampoline_pc
-    } else {
-        0
-    };
-    set_pc(ctx_ptr, next_pc, trampoline_pc);
-    true
+    match slot.replay_plan {
+        ReplayPlan::Skip => {
+            let ctx = unsafe { &mut *ctx_ptr };
+            ctx.pc = address.wrapping_add(slot.step_len as u64);
+            true
+        }
+        ReplayPlan::Trampoline => {
+            if slot.trampoline_pc == 0 {
+                return false;
+            }
+
+            let ctx = unsafe { &mut *ctx_ptr };
+            ctx.pc = slot.trampoline_pc;
+            true
+        }
+        plan => crate::replay::apply_replay_plan(plan, ctx_ptr, address, slot.step_len),
+    }
 }
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
