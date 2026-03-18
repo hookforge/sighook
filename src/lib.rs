@@ -394,6 +394,8 @@ fn instrument_internal(
                 .or_else(|| state::original_opcode_by_address(address))
                 .ok_or(SigHookError::InvalidAddress)?;
             #[cfg(target_arch = "aarch64")]
+            // Recompute the replay plan whenever we re-register an existing slot so
+            // the current execute-original policy is reflected in slot state.
             let replay_plan =
                 replay::decode_replay_plan(address, original_opcode, execute_original);
 
@@ -480,6 +482,8 @@ fn instrument_internal(
         };
 
         #[cfg(target_arch = "aarch64")]
+        // Decode once at install time and store a compact execution strategy in the
+        // slot. The signal path later consumes only this precomputed plan.
         let replay_plan = replay::decode_replay_plan(address, original_opcode, execute_original);
 
         let register_result = state::register_slot(
