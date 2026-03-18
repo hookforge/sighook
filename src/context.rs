@@ -12,6 +12,9 @@
 //! Linux x86_64 AVX high halves and Linux AArch64 FPSIMD extension records.
 
 #[cfg(target_arch = "aarch64")]
+use std::ops::{Deref, DerefMut};
+
+#[cfg(target_arch = "aarch64")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct XRegistersNamed {
@@ -59,10 +62,72 @@ pub union XRegisters {
 #[cfg(target_arch = "aarch64")]
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct FpRegisters {
+pub struct VRegistersNamed {
+    pub v0: u128,
+    pub v1: u128,
+    pub v2: u128,
+    pub v3: u128,
+    pub v4: u128,
+    pub v5: u128,
+    pub v6: u128,
+    pub v7: u128,
+    pub v8: u128,
+    pub v9: u128,
+    pub v10: u128,
+    pub v11: u128,
+    pub v12: u128,
+    pub v13: u128,
+    pub v14: u128,
+    pub v15: u128,
+    pub v16: u128,
+    pub v17: u128,
+    pub v18: u128,
+    pub v19: u128,
+    pub v20: u128,
+    pub v21: u128,
+    pub v22: u128,
+    pub v23: u128,
+    pub v24: u128,
+    pub v25: u128,
+    pub v26: u128,
+    pub v27: u128,
+    pub v28: u128,
+    pub v29: u128,
+    pub v30: u128,
+    pub v31: u128,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union VRegisters {
     pub v: [u128; 32],
+    pub named: VRegistersNamed,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FpRegisters {
+    pub regs: VRegisters,
     pub fpsr: u32,
     pub fpcr: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Deref for FpRegisters {
+    type Target = VRegisters;
+
+    fn deref(&self) -> &Self::Target {
+        &self.regs
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl DerefMut for FpRegisters {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.regs
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -169,7 +234,11 @@ pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
     // registers directly into `HookContext`.
     let mut fpregs = zeroed_fpregs();
     unsafe {
-        std::ptr::copy_nonoverlapping(ns.__v.as_ptr().cast::<u128>(), fpregs.v.as_mut_ptr(), 32);
+        std::ptr::copy_nonoverlapping(
+            ns.__v.as_ptr().cast::<u128>(),
+            fpregs.regs.v.as_mut_ptr(),
+            32,
+        );
     }
     fpregs.fpsr = ns.__fpsr;
     fpregs.fpcr = ns.__fpcr;
@@ -212,7 +281,7 @@ pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
 
     unsafe {
         std::ptr::copy_nonoverlapping(
-            ctx.fpregs.v.as_ptr(),
+            ctx.fpregs.regs.v.as_ptr(),
             ns.__v.as_mut_ptr().cast::<u128>(),
             32,
         );
@@ -349,7 +418,7 @@ pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
     // `HookContext`; FP/SIMD state simply remains zero-initialized in that case.
     if let Some(fpsimd) = unsafe { linux_aarch64_fpsimd_context(mcontext) } {
         let fpsimd = unsafe { &*fpsimd };
-        fpregs.v = fpsimd.vregs;
+        fpregs.regs.v = fpsimd.vregs;
         fpregs.fpsr = fpsimd.fpsr;
         fpregs.fpcr = fpsimd.fpcr;
     }
@@ -389,7 +458,7 @@ pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
 
     if let Some(fpsimd) = unsafe { linux_aarch64_fpsimd_context(mcontext) } {
         let fpsimd = unsafe { &mut *fpsimd };
-        fpsimd.vregs = ctx.fpregs.v;
+        fpsimd.vregs = ctx.fpregs.regs.v;
         fpsimd.fpsr = ctx.fpregs.fpsr;
         fpsimd.fpcr = ctx.fpregs.fpcr;
     }
@@ -810,5 +879,29 @@ pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
 pub unsafe fn free_ctx(ctx: *mut HookContext) {
     if !ctx.is_null() {
         let _ = unsafe { Box::from_raw(ctx) };
+    }
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod tests {
+    use super::{FpRegisters, VRegisters};
+
+    #[test]
+    fn aarch64_fpreg_named_and_array_views_alias() {
+        let mut fpregs = FpRegisters {
+            regs: VRegisters { v: [0; 32] },
+            fpsr: 0,
+            fpcr: 0,
+        };
+
+        unsafe {
+            fpregs.named.v0 = 0x11;
+            fpregs.named.v31 = 0x22;
+            assert_eq!(fpregs.v[0], 0x11);
+            assert_eq!(fpregs.v[31], 0x22);
+
+            fpregs.v[1] = 0x33;
+            assert_eq!(fpregs.named.v1, 0x33);
+        }
     }
 }
