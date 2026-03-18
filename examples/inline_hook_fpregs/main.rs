@@ -25,7 +25,7 @@ extern "C" fn replace_in_callback(_address: u64, ctx: *mut HookContext) {
     unsafe {
         #[cfg(target_arch = "aarch64")]
         {
-            (*ctx).fpregs.v[0] = u128::from_le_bytes(encode_i32x4([42, 43, 44, 45]));
+            (*ctx).fpregs.regs.named.v0 = u128::from_le_bytes(encode_i32x4([42, 43, 44, 45]));
         }
 
         #[cfg(all(target_arch = "x86_64", target_os = "macos"))]

@@ -548,16 +548,20 @@ fn write_w(ctx: &mut HookContext, reg: u8, value: u32) {
 /// Storing the 32-bit value as `u128` naturally leaves the upper 96 bits cleared,
 /// which matches AArch64 scalar FP load semantics.
 fn write_s(ctx: &mut HookContext, reg: u8, value: u32) {
-    if (reg as usize) < ctx.fpregs.v.len() {
-        ctx.fpregs.v[reg as usize] = value as u128;
+    if (reg as usize) < 32 {
+        unsafe {
+            ctx.fpregs.v[reg as usize] = value as u128;
+        }
     }
 }
 
 #[inline]
 /// Writes a scalar `dN` result into `vN`, clearing the high 64 bits.
 fn write_d(ctx: &mut HookContext, reg: u8, value: u64) {
-    if (reg as usize) < ctx.fpregs.v.len() {
-        ctx.fpregs.v[reg as usize] = value as u128;
+    if (reg as usize) < 32 {
+        unsafe {
+            ctx.fpregs.v[reg as usize] = value as u128;
+        }
     }
 }
 
@@ -567,8 +571,10 @@ fn write_d(ctx: &mut HookContext, reg: u8, value: u64) {
 /// `HookContext` stores vector registers as `u128`, so replay converts the raw bytes
 /// into the host integer representation once at the boundary.
 fn write_q(ctx: &mut HookContext, reg: u8, value: [u8; 16]) {
-    if (reg as usize) < ctx.fpregs.v.len() {
-        ctx.fpregs.v[reg as usize] = u128::from_le_bytes(value);
+    if (reg as usize) < 32 {
+        unsafe {
+            ctx.fpregs.v[reg as usize] = u128::from_le_bytes(value);
+        }
     }
 }
 
@@ -637,7 +643,7 @@ unsafe fn read_u128_bytes(address: u64) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::{ReplayPlan, apply_replay_plan, decode_replay_plan};
-    use crate::context::{FpRegisters, HookContext, XRegisters};
+    use crate::context::{FpRegisters, HookContext, VRegisters, XRegisters};
 
     fn empty_ctx() -> HookContext {
         HookContext {
@@ -647,7 +653,7 @@ mod tests {
             cpsr: 0,
             pad: 0,
             fpregs: FpRegisters {
-                v: [0; 32],
+                regs: VRegisters { v: [0; 32] },
                 fpsr: 0,
                 fpcr: 0,
             },
@@ -818,7 +824,7 @@ mod tests {
             0x5000,
             4,
         ));
-        assert_eq!(ctx.fpregs.v[6], double as u128);
+        assert_eq!(unsafe { ctx.fpregs.v[6] }, double as u128);
         assert_eq!(ctx.pc, 0x5004);
 
         assert!(apply_replay_plan(
@@ -830,7 +836,7 @@ mod tests {
             0x6000,
             4,
         ));
-        assert_eq!(ctx.fpregs.v[7], u128::from_le_bytes(quad));
+        assert_eq!(unsafe { ctx.fpregs.v[7] }, u128::from_le_bytes(quad));
         assert_eq!(ctx.pc, 0x6004);
     }
 
