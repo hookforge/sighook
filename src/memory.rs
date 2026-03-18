@@ -1,3 +1,9 @@
+//! Low-level executable-memory helpers.
+//!
+//! This module owns the OS-specific mechanics behind runtime patching:
+//! making text temporarily writable, reading bytes for decode, restoring execute
+//! permissions, and flushing instruction caches where the architecture requires it.
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use crate::constants::VM_PROT_COPY;
 #[cfg(target_arch = "aarch64")]
@@ -91,6 +97,8 @@ fn page_size() -> Result<usize, SigHookError> {
 }
 
 fn protect_range_start_len(address: usize, len: usize, page_size: usize) -> (usize, usize) {
+    // `mprotect`/`mach_vm_protect` operate on full pages, so expand the requested
+    // byte range to the minimal page-aligned span that covers it.
     let start = address & !(page_size - 1);
     let end_inclusive = address + len - 1;
     let end_page = end_inclusive & !(page_size - 1);
@@ -149,6 +157,9 @@ fn read_decode_window_x86(address: u64) -> Result<([u8; 15], usize), SigHookErro
     let mut bytes = [0u8; 15];
     let page_offset = addr % page_size;
     let first_chunk_len = bytes.len().min(page_size - page_offset);
+
+    // x86 instructions are up to 15 bytes long, so decoding near a page boundary may
+    // need bytes from the following page.
     read_memory_chunk_x86(addr, &mut bytes[..first_chunk_len])?;
 
     let mut total_len = first_chunk_len;
@@ -198,6 +209,8 @@ fn read_memory_chunk_x86(address: usize, out: &mut [u8]) -> Result<(), SigHookEr
         return Err(SigHookError::InvalidAddress);
     }
 
+    // Fall back to `/proc/self/mem` when `process_vm_readv` is unavailable or denied
+    // for the current environment.
     read_memory_chunk_x86_proc_mem(address, out)
 }
 
@@ -291,6 +304,8 @@ fn patch_bytes(address: u64, bytes: &[u8]) -> Result<Vec<u8>, SigHookError> {
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
+        // Apple code pages are commonly copy-on-write mappings, so `VM_PROT_COPY`
+        // keeps the kernel happy while we temporarily enable writes.
         let writable_prot = libc::VM_PROT_READ | libc::VM_PROT_WRITE | VM_PROT_COPY;
 
         let kr = unsafe {
@@ -337,6 +352,8 @@ fn patch_bytes(address: u64, bytes: &[u8]) -> Result<Vec<u8>, SigHookError> {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len());
     }
 
+    // On AArch64, newly written instructions are not guaranteed to be visible to the
+    // I-cache until we explicitly invalidate the affected range.
     flush_instruction_cache(addr as *mut c_void, bytes.len());
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -452,6 +469,8 @@ pub(crate) fn encode_b(from_address: u64, to_address: u64) -> Result<u32, SigHoo
         return Err(SigHookError::BranchOutOfRange);
     }
 
+    // AArch64 `b` encodes a signed 26-bit word offset, so the low two bits are
+    // implicit zeros and the effective range is +/- 128 MiB.
     let imm26 = offset >> 2;
     let min = -(1_i128 << 25);
     let max = (1_i128 << 25) - 1;
@@ -468,6 +487,7 @@ pub(crate) fn encode_jmp_rel32(
     from_address: u64,
     to_address: u64,
 ) -> Result<[u8; 5], SigHookError> {
+    // x86 relative jumps are based on RIP after the jump instruction itself.
     let offset = (to_address as i128) - ((from_address as i128) + 5);
     if offset < i32::MIN as i128 || offset > i32::MAX as i128 {
         return Err(SigHookError::BranchOutOfRange);

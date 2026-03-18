@@ -1,3 +1,10 @@
+//! Out-of-line execution stubs used when a displaced instruction cannot be replayed
+//! directly from saved context.
+//!
+//! A trampoline copies the original bytes into fresh executable memory and then
+//! transfers control back to the sequential original PC. This is the generic
+//! execute-original fallback used when no direct replay plan is available.
+
 #[cfg(target_arch = "aarch64")]
 use crate::constants::{BR_X16, LDR_X16_LITERAL_8};
 use crate::error::SigHookError;
@@ -43,6 +50,13 @@ pub(crate) fn create_original_trampoline(
             return Err(SigHookError::InvalidAddress);
         }
 
+        // Layout:
+        //   [0x00] original displaced instruction
+        //   [0x04] ldr x16, #8
+        //   [0x08] br  x16
+        //   [0x0C] absolute 64-bit return address
+        //
+        // This is intentionally tiny and avoids any dependence on branch reach.
         let mut insn = [0u8; 4];
         insn.copy_from_slice(original_bytes);
         let original_opcode = u32::from_le_bytes(insn);
@@ -63,6 +77,8 @@ pub(crate) fn create_original_trampoline(
             return Err(SigHookError::InvalidAddress);
         }
 
+        // Copy the displaced instruction bytes verbatim, then append whichever jump
+        // form can reach `next_pc`.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 original_bytes.as_ptr(),
@@ -115,6 +131,7 @@ pub(crate) unsafe fn free_original_trampoline(trampoline_pc: u64) {
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 fn encode_abs_jmp_indirect(to_address: u64) -> [u8; 14] {
     let mut bytes = [0u8; 14];
+    // `jmp qword ptr [rip+0]` followed by the absolute destination literal.
     bytes[0] = 0xFF;
     bytes[1] = 0x25;
     bytes[2] = 0x00;
