@@ -591,7 +591,7 @@ pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
 
     if let Some(fpsimd) = unsafe { linux_aarch64_fpsimd_context(mcontext) } {
         let fpsimd = unsafe { &mut *fpsimd };
-        fpsimd.vregs = ctx.fpregs.regs.v;
+        fpsimd.vregs = unsafe { ctx.fpregs.regs.v };
         fpsimd.fpsr = ctx.fpregs.fpsr;
         fpsimd.fpcr = ctx.fpregs.fpcr;
     }
