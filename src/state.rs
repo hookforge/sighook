@@ -17,6 +17,9 @@ pub(crate) struct InstrumentSlot {
     pub return_to_caller: bool,
     pub runtime_patch_installed: bool,
     pub trampoline_pc: u64,
+    // On AArch64, execute-original is no longer just a boolean choice between
+    // "jump to trampoline" and "skip". We persist the fully decoded replay policy
+    // here so the trap handler can stay decode-free.
     #[cfg(target_arch = "aarch64")]
     pub replay_plan: ReplayPlan,
 }
@@ -144,6 +147,8 @@ pub(crate) unsafe fn register_slot(
         }
 
         #[cfg(target_arch = "aarch64")]
+        // Only the explicit trampoline fallback needs an executable out-of-line copy.
+        // Direct replay plans mutate the saved context instead.
         let needs_trampoline = replay_plan.requires_trampoline();
         #[cfg(not(target_arch = "aarch64"))]
         let needs_trampoline = execute_original;
@@ -167,6 +172,8 @@ pub(crate) unsafe fn register_slot(
     while index < MAX_INSTRUMENTS {
         if !(unsafe { SLOTS[index].used }) {
             #[cfg(target_arch = "aarch64")]
+            // The same rule applies for brand new slots: allocate trampoline memory
+            // only when the replay planner could not provide a direct emulation path.
             let needs_trampoline = replay_plan.requires_trampoline();
             #[cfg(not(target_arch = "aarch64"))]
             let needs_trampoline = execute_original;

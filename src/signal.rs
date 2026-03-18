@@ -308,6 +308,10 @@ fn handle_trap_aarch64(address: u64, ctx_ptr: *mut crate::context::HookContext) 
         return true;
     }
 
+    // At this point the callback chose not to redirect control flow. The remaining
+    // decision is therefore purely "how should execute-original behave for this
+    // displaced instruction?" The precomputed replay plan answers that without
+    // decoding instruction bits in the signal handler.
     match slot.replay_plan {
         ReplayPlan::Skip => {
             let ctx = unsafe { &mut *ctx_ptr };
