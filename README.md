@@ -47,14 +47,14 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 
 ```toml
 [dependencies]
-sighook = "0.9.1"
+sighook = "0.10.0"
 ```
 
 Enable assembly-string patching support only when needed:
 
 ```toml
 [dependencies]
-sighook = { version = "0.9.1", features = ["patch_asm"] }
+sighook = { version = "0.10.0", features = ["patch_asm"] }
 ```
 
 `patch_asm` pulls `keystone-engine`, which is a heavier dependency.
