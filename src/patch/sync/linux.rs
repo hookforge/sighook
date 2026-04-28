@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 static HANDLER_INSTALLED: OnceLock<Result<(), SigHookError>> = OnceLock::new();
+static STOP_SIGNAL: OnceLock<c_int> = OnceLock::new();
 static STOP_ACTIVE: AtomicBool = AtomicBool::new(false);
 static STOP_GENERATION: AtomicUsize = AtomicUsize::new(0);
 static STOP_ACKS: AtomicUsize = AtomicUsize::new(0);
@@ -66,28 +67,50 @@ fn ensure_handler_installed() -> Result<(), SigHookError> {
 fn install_handler() -> Result<(), SigHookError> {
     unsafe {
         let mut act: libc::sigaction = zeroed();
-        let mut previous_action: libc::sigaction = zeroed();
         act.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
         act.sa_sigaction = stop_handler as *const () as usize;
         if libc::sigemptyset(&mut act.sa_mask) != 0 {
             return Err(SigHookError::PatchSynchronizationFailed);
         }
-        if libc::sigaction(stop_signal(), &act, &mut previous_action) != 0 {
-            return Err(SigHookError::PatchSynchronizationFailed);
-        }
 
-        let previous_handler = previous_action.sa_sigaction;
         let our_handler = stop_handler as *const () as usize;
-        if previous_handler != libc::SIG_DFL && previous_handler != our_handler {
-            let _ = libc::sigaction(stop_signal(), &previous_action, std::ptr::null_mut());
-            return Err(SigHookError::PatchSynchronizationFailed);
+        for signo in stop_signal_candidates() {
+            let mut current_action: libc::sigaction = zeroed();
+            if libc::sigaction(signo, std::ptr::null(), &mut current_action) != 0 {
+                continue;
+            }
+            let current_handler = current_action.sa_sigaction;
+            if current_handler != libc::SIG_DFL && current_handler != our_handler {
+                continue;
+            }
+
+            let mut previous_action: libc::sigaction = zeroed();
+            if libc::sigaction(signo, &act, &mut previous_action) != 0 {
+                continue;
+            }
+
+            let previous_handler = previous_action.sa_sigaction;
+            if (previous_handler == libc::SIG_DFL || previous_handler == our_handler)
+                && STOP_SIGNAL.set(signo).is_ok()
+            {
+                return Ok(());
+            }
+
+            let _ = libc::sigaction(signo, &previous_action, std::ptr::null_mut());
         }
     }
-    Ok(())
+    Err(SigHookError::PatchSynchronizationFailed)
 }
 
-fn stop_signal() -> c_int {
-    libc::SIGRTMAX() - 1
+fn stop_signal_candidates() -> impl Iterator<Item = c_int> {
+    (libc::SIGRTMIN()..=libc::SIGRTMAX()).rev()
+}
+
+fn stop_signal() -> Result<c_int, SigHookError> {
+    STOP_SIGNAL
+        .get()
+        .copied()
+        .ok_or(SigHookError::PatchSynchronizationFailed)
 }
 
 fn current_tid() -> Result<libc::pid_t, SigHookError> {
@@ -120,8 +143,9 @@ fn list_other_tids(current_tid: libc::pid_t) -> Result<Vec<libc::pid_t>, SigHook
 
 fn send_stop_signal(tids: &[libc::pid_t]) -> Result<(), SigHookError> {
     let pid = unsafe { libc::getpid() };
+    let signal = stop_signal()?;
     for &tid in tids {
-        let rc = unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, stop_signal()) as c_int };
+        let rc = unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, signal) as c_int };
         if rc != 0 {
             return Err(SigHookError::PatchSynchronizationFailed);
         }
