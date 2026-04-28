@@ -78,7 +78,7 @@ fn install_handler() -> Result<(), SigHookError> {
 
         let previous_handler = previous_action.sa_sigaction;
         let our_handler = stop_handler as *const () as usize;
-        if previous_handler != libc::SIG_DFL as usize && previous_handler != our_handler {
+        if previous_handler != libc::SIG_DFL && previous_handler != our_handler {
             let _ = libc::sigaction(stop_signal(), &previous_action, std::ptr::null_mut());
             return Err(SigHookError::PatchSynchronizationFailed);
         }
