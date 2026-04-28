@@ -1,3 +1,5 @@
+#![allow(clippy::missing_const_for_thread_local)]
+
 //! AArch64 execute-original replay support for displaced trap hooks.
 //!
 //! The core problem is that `instrument(...)` replaces the original instruction with

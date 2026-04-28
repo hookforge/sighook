@@ -1,3 +1,5 @@
+#![allow(clippy::missing_const_for_thread_local)]
+
 use crate::error::SigHookError;
 use std::sync::Mutex;
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -102,7 +104,7 @@ mod linux {
         unsafe {
             let mut act: libc::sigaction = zeroed();
             act.sa_flags = libc::SA_SIGINFO;
-            act.sa_sigaction = stop_handler as usize;
+            act.sa_sigaction = stop_handler as *const () as usize;
             if libc::sigemptyset(&mut act.sa_mask) != 0 {
                 return Err(SigHookError::PatchSynchronizationFailed);
             }

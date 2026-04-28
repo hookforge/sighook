@@ -1,5 +1,7 @@
+#[cfg(target_arch = "aarch64")]
 use sighook::{HookContext, instrument};
 
+#[cfg(target_arch = "aarch64")]
 extern "C" fn on_hit(_address: u64, _ctx: *mut HookContext) {}
 
 #[used]
