@@ -96,6 +96,38 @@ jobs:
           echo "$OUT"
           [[ "$OUT" == *"calc(6, 7) = 42"* ]]
 
+          cc -O0 -fno-inline examples/instrument_nop_x16/target.c -o examples/instrument_nop_x16/app
+          DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libinstrument_nop_x16.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/instrument_nop_x16/app)
+          echo "$OUT"
+          [[ "$OUT" == "read_marker() = 4660" ]]
+
+          cc -O0 -fno-inline examples/instrument_blr_lr/target.c -o examples/instrument_blr_lr/app
+          DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libinstrument_blr_lr.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/instrument_blr_lr/app)
+          echo "$OUT"
+          OBSERVED=$(awk '{print $3}' <<<"$OUT")
+          EXPECTED=$(awk '{print $6}' <<<"$OUT")
+          [[ -n "$OBSERVED" && "$OBSERVED" == "$EXPECTED" ]]
+
+          cc -O0 -fno-inline examples/instrument_b_cond_nv/target.c -o examples/instrument_b_cond_nv/app
+          DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libinstrument_b_cond_nv.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/instrument_b_cond_nv/app)
+          echo "$OUT"
+          [[ "$OUT" == "branch_nv() = 2" ]]
+
+          cc -O0 -fno-inline examples/prepatched_upgrade_execute_original/target.c -o examples/prepatched_upgrade_execute_original/app
+          DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libprepatched_upgrade_execute_original.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/prepatched_upgrade_execute_original/app)
+          echo "$OUT"
+          [[ "$OUT" == "calc_prepatched() = 42" ]]
+
+          cc -O0 -fno-inline -pthread examples/patch_race_stress/target.c -o examples/patch_race_stress/app
+          DYLIB="$PWD/target/aarch64-apple-darwin/debug/examples/libpatch_race_stress.dylib"
+          OUT=$(DYLD_INSERT_LIBRARIES="$DYLIB" examples/patch_race_stress/app)
+          echo "$OUT"
+          [[ "$OUT" == "stress ok" ]]
+
   rust-macos-x86_64:
     runs-on: macos-15-intel
 
@@ -364,6 +396,44 @@ jobs:
           OUT=$(LD_PRELOAD="$SO" examples/patch_asm_add_to_mul/app)
           echo "$OUT"
           [[ "$OUT" == *"calc(6, 7) = 42"* ]]
+
+          cc -O0 -fno-inline -rdynamic examples/instrument_nop_x16/target.c -o examples/instrument_nop_x16/app
+          SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libinstrument_nop_x16.so"
+          OUT=$(LD_PRELOAD="$SO" examples/instrument_nop_x16/app)
+          echo "$OUT"
+          [[ "$OUT" == "read_marker() = 4660" ]]
+
+          cc -O0 -fno-inline -rdynamic examples/instrument_blr_lr/target.c -o examples/instrument_blr_lr/app
+          SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libinstrument_blr_lr.so"
+          OUT=$(LD_PRELOAD="$SO" examples/instrument_blr_lr/app)
+          echo "$OUT"
+          OBSERVED=$(awk '{print $3}' <<<"$OUT")
+          EXPECTED=$(awk '{print $6}' <<<"$OUT")
+          [[ -n "$OBSERVED" && "$OBSERVED" == "$EXPECTED" ]]
+
+          cc -O0 -fno-inline -rdynamic examples/instrument_b_cond_nv/target.c -o examples/instrument_b_cond_nv/app
+          SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libinstrument_b_cond_nv.so"
+          OUT=$(LD_PRELOAD="$SO" examples/instrument_b_cond_nv/app)
+          echo "$OUT"
+          [[ "$OUT" == "branch_nv() = 2" ]]
+
+          cc -O0 -fno-inline -rdynamic examples/prepatched_upgrade_execute_original/target.c -o examples/prepatched_upgrade_execute_original/app
+          SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libprepatched_upgrade_execute_original.so"
+          OUT=$(LD_PRELOAD="$SO" examples/prepatched_upgrade_execute_original/app)
+          echo "$OUT"
+          [[ "$OUT" == "calc_prepatched() = 42" ]]
+
+          cc -O0 -fno-inline -rdynamic examples/instrument_literal_fault_pc/target.c -o examples/instrument_literal_fault_pc/app
+          SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libinstrument_literal_fault_pc.so"
+          OUT=$(LD_PRELOAD="$SO" examples/instrument_literal_fault_pc/app)
+          echo "$OUT"
+          [[ "$OUT" == *"match=1"* ]]
+
+          cc -O0 -fno-inline -pthread -rdynamic examples/patch_race_stress/target.c -o examples/patch_race_stress/app
+          SO="$PWD/target/aarch64-unknown-linux-gnu/debug/examples/libpatch_race_stress.so"
+          OUT=$(LD_PRELOAD="$SO" examples/patch_race_stress/app)
+          echo "$OUT"
+          [[ "$OUT" == "stress ok" ]]
 
   rust-ios-aarch64:
     runs-on: macos-14
