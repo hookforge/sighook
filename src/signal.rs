@@ -30,11 +30,7 @@ impl PreviousActionSlot {
 
     unsafe fn store(&self, previous_action: &libc::sigaction) {
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                previous_action,
-                (*self.action.get()).as_mut_ptr(),
-                1,
-            );
+            std::ptr::copy_nonoverlapping(previous_action, (*self.action.get()).as_mut_ptr(), 1);
         }
         self.set.store(true, Ordering::Release);
     }
@@ -451,7 +447,7 @@ fn install_signal(signum: c_int, handler: libc::sighandler_t) -> Result<(), SigH
         let mut act: libc::sigaction = zeroed();
         let mut previous_action: libc::sigaction = zeroed();
         act.sa_flags = libc::SA_SIGINFO;
-        act.sa_sigaction = handler as usize;
+        act.sa_sigaction = handler;
 
         if libc::sigemptyset(&mut act.sa_mask) != 0 {
             return Err(SigHookError::SigEmptySetFailed {

@@ -1,6 +1,6 @@
 use crate::error::SigHookError;
 use std::sync::Mutex;
-#[cfg(all(any(target_os = "linux", target_os = "android")))]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use std::sync::OnceLock;
 
 static PATCH_LOCK: Mutex<()> = Mutex::new(());
@@ -17,12 +17,12 @@ pub(crate) fn with_threads_paused<T>(
 ) -> Result<T, SigHookError> {
     let _guard = lock_or_recover(&PATCH_LOCK);
 
-    #[cfg(all(any(target_os = "linux", target_os = "android")))]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         return linux::with_threads_paused(f);
     }
 
-    #[cfg(all(any(target_os = "macos", target_os = "ios")))]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         return apple::with_threads_paused(f);
     }
@@ -31,7 +31,7 @@ pub(crate) fn with_threads_paused<T>(
     f()
 }
 
-#[cfg(all(any(target_os = "linux", target_os = "android")))]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 mod linux {
     use super::OnceLock;
     use crate::error::SigHookError;
@@ -92,7 +92,7 @@ mod linux {
     }
 
     fn ensure_handler_installed() -> Result<(), SigHookError> {
-        match HANDLER_INSTALLED.get_or_init(|| install_handler()) {
+        match HANDLER_INSTALLED.get_or_init(install_handler) {
             Ok(()) => Ok(()),
             Err(err) => Err(*err),
         }
@@ -127,7 +127,9 @@ mod linux {
 
     fn list_other_tids(current_tid: libc::pid_t) -> Result<Vec<libc::pid_t>, SigHookError> {
         let mut tids = Vec::new();
-        for entry in fs::read_dir("/proc/self/task").map_err(|_| SigHookError::PatchSynchronizationFailed)? {
+        for entry in
+            fs::read_dir("/proc/self/task").map_err(|_| SigHookError::PatchSynchronizationFailed)?
+        {
             let entry = entry.map_err(|_| SigHookError::PatchSynchronizationFailed)?;
             let name = entry.file_name();
             let name = name
@@ -179,12 +181,12 @@ mod linux {
     }
 }
 
-#[cfg(all(any(target_os = "macos", target_os = "ios")))]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple {
     use crate::error::SigHookError;
     use libc::{
-        kern_return_t, mach_msg_type_number_t, mach_port_t, pthread_mach_thread_np,
-        pthread_self, task_t, task_threads, thread_act_array_t, thread_act_t, vm_deallocate,
+        kern_return_t, mach_msg_type_number_t, mach_port_t, pthread_mach_thread_np, pthread_self,
+        task_t, task_threads, thread_act_array_t, thread_act_t, vm_deallocate,
     };
     use std::mem::size_of;
 
@@ -233,9 +235,14 @@ mod apple {
         }
     }
 
-    fn deallocate_threads(current: mach_port_t, threads: thread_act_array_t, thread_count: mach_msg_type_number_t) {
+    fn deallocate_threads(
+        current: mach_port_t,
+        threads: thread_act_array_t,
+        thread_count: mach_msg_type_number_t,
+    ) {
         if !threads.is_null() {
-            let thread_slice = unsafe { std::slice::from_raw_parts(threads, thread_count as usize) };
+            let thread_slice =
+                unsafe { std::slice::from_raw_parts(threads, thread_count as usize) };
             for &thread in thread_slice {
                 if thread != current {
                     let _ = unsafe { mach_port_deallocate(libc::mach_task_self(), thread) };
