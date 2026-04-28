@@ -28,6 +28,7 @@ mod constants;
 mod context;
 mod error;
 mod memory;
+mod patch_sync;
 #[cfg(target_arch = "aarch64")]
 mod replay;
 mod signal;
@@ -202,7 +203,8 @@ pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
 /// This API patches the target instruction with a trap opcode and registers `callback`.
 /// On trap, your callback receives a mutable [`HookContext`].
 /// If the callback does not redirect control flow (`pc`/`rip` unchanged),
-/// the original instruction runs through an internal trampoline, then execution continues.
+/// the original instruction either replays directly from saved context or runs
+/// through an internal trampoline, then execution continues.
 ///
 /// On `x86_64`, trap patching writes `int3` at instruction start and pads the
 /// remaining bytes of that decoded instruction with `NOP`.
@@ -210,11 +212,14 @@ pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
 /// # PC-relative note
 ///
 /// On `aarch64`, this API precomputes direct replay plans for common displaced
-/// PC-relative instructions, including `adr`, `adrp`, literal `ldr`/`ldrsw`/`prfm`,
-/// `b`/`bl`/`b.cond`, `cbz`/`cbnz`, and `tbz`/`tbnz`.
+/// instructions, including `nop`, `br`/`blr`/`ret`, PC-relative `adr`/`adrp`,
+/// literal `ldr`/`ldrsw`/`prfm`, `b`/`bl`/`b.cond`, `cbz`/`cbnz`, and
+/// `tbz`/`tbnz`.
 ///
-/// Other `aarch64` PC-relative forms are still not guaranteed safe in
-/// execute-original mode. For unsupported patch points, prefer
+/// Other `aarch64` patch points are still not guaranteed safe in
+/// execute-original mode. Unsupported execute-original installs now return
+/// [`SigHookError::UnsupportedOperation`] instead of silently falling back to an
+/// inexact trampoline. For those patch points, prefer
 /// [`instrument_no_original`] and emulate the original instruction semantics
 /// manually in your callback.
 ///
@@ -394,21 +399,35 @@ fn instrument_internal(
     install_mode: InstrumentInstallMode,
 ) -> Result<u32, SigHookError> {
     unsafe {
-        if let Some((bytes, len)) = state::original_bytes_by_address(address) {
+        if let Some((_stored_bytes, _stored_len)) = state::original_bytes_by_address(address) {
             #[cfg(target_arch = "aarch64")]
             let original_opcode = state::cached_original_opcode_by_address(address)
                 .or_else(|| state::original_opcode_by_address(address))
                 .ok_or(SigHookError::InvalidAddress)?;
             #[cfg(target_arch = "aarch64")]
+            let original_bytes = original_opcode.to_le_bytes();
+            #[cfg(target_arch = "aarch64")]
+            let register_bytes: &[u8] = &original_bytes;
+            #[cfg(target_arch = "aarch64")]
+            let register_len: u8 = original_bytes.len() as u8;
+            #[cfg(not(target_arch = "aarch64"))]
+            let register_bytes: &[u8] = &_stored_bytes[.._stored_len as usize];
+            #[cfg(not(target_arch = "aarch64"))]
+            let register_len: u8 = _stored_len;
+            #[cfg(target_arch = "aarch64")]
             // Recompute the replay plan whenever we re-register an existing slot so
             // the current execute-original policy is reflected in slot state.
             let replay_plan =
                 replay::decode_replay_plan(address, original_opcode, execute_original);
+            #[cfg(target_arch = "aarch64")]
+            if execute_original && matches!(replay_plan, replay::ReplayPlan::Trampoline) {
+                return Err(SigHookError::UnsupportedOperation);
+            }
 
             state::register_slot(
                 address,
-                &bytes[..len as usize],
-                len,
+                register_bytes,
+                register_len,
                 callback,
                 #[cfg(target_arch = "aarch64")]
                 replay_plan,
@@ -433,7 +452,7 @@ fn instrument_internal(
             InstrumentInstallMode::RuntimePatch => {
                 #[cfg(target_arch = "aarch64")]
                 {
-                    let original = memory::patch_u32(address, constants::BRK_OPCODE)?;
+                    let original = memory::read_u32(address);
                     (original.to_le_bytes().to_vec(), original, true)
                 }
 
@@ -441,10 +460,6 @@ fn instrument_internal(
                 {
                     let original_bytes = memory::read_bytes(address, step_len as usize)?;
                     let original4 = memory::read_bytes(address, 4)?;
-
-                    let mut trap_patch = vec![0x90u8; step_len as usize];
-                    trap_patch[0] = memory::int3_opcode();
-                    let _ = memory::patch_bytes_public(address, &trap_patch)?;
 
                     let mut opcode = [0u8; 4];
                     opcode.copy_from_slice(&original4);
@@ -491,6 +506,10 @@ fn instrument_internal(
         // Decode once at install time and store a compact execution strategy in the
         // slot. The signal path later consumes only this precomputed plan.
         let replay_plan = replay::decode_replay_plan(address, original_opcode, execute_original);
+        #[cfg(target_arch = "aarch64")]
+        if execute_original && matches!(replay_plan, replay::ReplayPlan::Trampoline) {
+            return Err(SigHookError::UnsupportedOperation);
+        }
 
         let register_result = state::register_slot(
             address,
@@ -505,25 +524,29 @@ fn instrument_internal(
         );
 
         if let Err(err) = register_result {
-            if runtime_patch_installed {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let mut bytes = [0u8; 4];
-                    bytes.copy_from_slice(&original_bytes[..4]);
-                    let original_opcode = u32::from_le_bytes(bytes);
-                    let _ = memory::patch_u32(address, original_opcode);
-                }
-
-                #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-                {
-                    let _ = memory::patch_bytes_public(address, &original_bytes);
-                }
-            }
-
             return Err(err);
         }
 
         if runtime_patch_installed {
+            #[cfg(target_arch = "aarch64")]
+            let patch_result = memory::patch_u32(address, constants::BRK_OPCODE).map(|_| ());
+
+            #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+            let patch_result = {
+                let mut trap_patch = vec![0x90u8; step_len as usize];
+                trap_patch[0] = memory::int3_opcode();
+                memory::patch_bytes_public(address, &trap_patch).map(|_| ())
+            };
+
+            if let Err(err) = patch_result {
+                if let Some(removed_slot) = state::drop_slot(address) {
+                    if removed_slot.trampoline_pc != 0 {
+                        trampoline::free_original_trampoline(removed_slot.trampoline_pc);
+                    }
+                }
+                return Err(err);
+            }
+
             state::cache_original_opcode(address, original_opcode);
         }
 
@@ -708,11 +731,9 @@ pub fn unhook(address: u64) -> Result<(), SigHookError> {
                 )?;
             }
 
-            if let Some(removed_slot) = state::remove_slot(address) {
-                if removed_slot.trampoline_pc != 0 {
-                    trampoline::free_original_trampoline(removed_slot.trampoline_pc);
-                }
-            }
+            signal::wait_for_trap_handlers_quiescent()?;
+
+            let _ = state::remove_slot(address);
 
             state::remove_cached_original_opcode(address);
             return Ok(());

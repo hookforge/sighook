@@ -69,6 +69,36 @@ path = "examples/instrument_unhook_restore/main.rs"
 crate-type = ["cdylib"]
 
 [[example]]
+name = "instrument_nop_x16"
+path = "examples/instrument_nop_x16/main.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "instrument_blr_lr"
+path = "examples/instrument_blr_lr/main.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "instrument_b_cond_nv"
+path = "examples/instrument_b_cond_nv/main.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "prepatched_upgrade_execute_original"
+path = "examples/prepatched_upgrade_execute_original/main.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "instrument_literal_fault_pc"
+path = "examples/instrument_literal_fault_pc/main.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "patch_race_stress"
+path = "examples/patch_race_stress/main.rs"
+crate-type = ["cdylib"]
+
+[[example]]
 name = "inline_hook_far"
 path = "examples/inline_hook_far/main.rs"
 crate-type = ["cdylib"]

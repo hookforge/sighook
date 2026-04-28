@@ -4,68 +4,91 @@ use crate::memory::last_errno;
 #[cfg(target_arch = "aarch64")]
 use crate::replay::ReplayPlan;
 use crate::state;
+use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use libc::{c_int, c_void};
 use std::mem::zeroed;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 type SigInfoHandler = extern "C" fn(c_int, *mut libc::siginfo_t, *mut c_void);
 type SigHandler = extern "C" fn(c_int);
 
-static mut PREV_SIGTRAP_ACTION: MaybeUninit<libc::sigaction> = MaybeUninit::uninit();
-static mut PREV_SIGTRAP_SET: bool = false;
-static mut PREV_SIGILL_ACTION: MaybeUninit<libc::sigaction> = MaybeUninit::uninit();
-static mut PREV_SIGILL_SET: bool = false;
+struct PreviousActionSlot {
+    action: UnsafeCell<MaybeUninit<libc::sigaction>>,
+    set: AtomicBool,
+}
+
+impl PreviousActionSlot {
+    const fn new() -> Self {
+        Self {
+            action: UnsafeCell::new(MaybeUninit::uninit()),
+            set: AtomicBool::new(false),
+        }
+    }
+
+    unsafe fn store(&self, previous_action: &libc::sigaction) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                previous_action,
+                (*self.action.get()).as_mut_ptr(),
+                1,
+            );
+        }
+        self.set.store(true, Ordering::Release);
+    }
+
+    fn load(&self) -> Option<libc::sigaction> {
+        if !self.set.load(Ordering::Acquire) {
+            return None;
+        }
+
+        Some(unsafe { std::ptr::read((*self.action.get()).as_ptr()) })
+    }
+}
+
+unsafe impl Sync for PreviousActionSlot {}
+
+static PREV_SIGTRAP_ACTION: PreviousActionSlot = PreviousActionSlot::new();
+static PREV_SIGILL_ACTION: PreviousActionSlot = PreviousActionSlot::new();
+#[cfg(target_arch = "aarch64")]
+static PREV_SIGSEGV_ACTION: PreviousActionSlot = PreviousActionSlot::new();
+#[cfg(target_arch = "aarch64")]
+static PREV_SIGBUS_ACTION: PreviousActionSlot = PreviousActionSlot::new();
+static ACTIVE_TRAP_HANDLERS: AtomicUsize = AtomicUsize::new(0);
 
 #[inline]
-fn current_handler_raw() -> libc::sighandler_t {
+fn current_trap_handler_raw() -> libc::sighandler_t {
     trap_handler as *const () as libc::sighandler_t
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn current_fault_handler_raw() -> libc::sighandler_t {
+    fault_handler as *const () as libc::sighandler_t
 }
 
 unsafe fn save_previous_action(signum: c_int, previous_action: &libc::sigaction) {
     match signum {
-        libc::SIGTRAP => unsafe {
-            std::ptr::copy_nonoverlapping(
-                previous_action,
-                std::ptr::addr_of_mut!(PREV_SIGTRAP_ACTION).cast::<libc::sigaction>(),
-                1,
-            );
-            PREV_SIGTRAP_SET = true;
-        },
-        libc::SIGILL => unsafe {
-            std::ptr::copy_nonoverlapping(
-                previous_action,
-                std::ptr::addr_of_mut!(PREV_SIGILL_ACTION).cast::<libc::sigaction>(),
-                1,
-            );
-            PREV_SIGILL_SET = true;
-        },
+        libc::SIGTRAP => unsafe { PREV_SIGTRAP_ACTION.store(previous_action) },
+        libc::SIGILL => unsafe { PREV_SIGILL_ACTION.store(previous_action) },
+        #[cfg(target_arch = "aarch64")]
+        libc::SIGSEGV => unsafe { PREV_SIGSEGV_ACTION.store(previous_action) },
+        #[cfg(target_arch = "aarch64")]
+        libc::SIGBUS => unsafe { PREV_SIGBUS_ACTION.store(previous_action) },
         _ => {}
     }
 }
 
 unsafe fn previous_action(signum: c_int) -> Option<libc::sigaction> {
     match signum {
-        libc::SIGTRAP => {
-            if unsafe { PREV_SIGTRAP_SET } {
-                Some(unsafe {
-                    std::ptr::read(
-                        std::ptr::addr_of!(PREV_SIGTRAP_ACTION).cast::<libc::sigaction>(),
-                    )
-                })
-            } else {
-                None
-            }
-        }
-        libc::SIGILL => {
-            if unsafe { PREV_SIGILL_SET } {
-                Some(unsafe {
-                    std::ptr::read(std::ptr::addr_of!(PREV_SIGILL_ACTION).cast::<libc::sigaction>())
-                })
-            } else {
-                None
-            }
-        }
+        libc::SIGTRAP => PREV_SIGTRAP_ACTION.load(),
+        libc::SIGILL => PREV_SIGILL_ACTION.load(),
+        #[cfg(target_arch = "aarch64")]
+        libc::SIGSEGV => PREV_SIGSEGV_ACTION.load(),
+        #[cfg(target_arch = "aarch64")]
+        libc::SIGBUS => PREV_SIGBUS_ACTION.load(),
         _ => None,
     }
 }
@@ -82,7 +105,12 @@ unsafe fn raise_with_default(signum: c_int) {
     }
 }
 
-unsafe fn chain_previous(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c_void) {
+unsafe fn chain_previous(
+    signum: c_int,
+    info: *mut libc::siginfo_t,
+    uctx: *mut c_void,
+    current_handler_raw: libc::sighandler_t,
+) {
     let previous = match unsafe { previous_action(signum) } {
         Some(previous) => previous,
         None => {
@@ -98,7 +126,7 @@ unsafe fn chain_previous(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c
         return;
     }
 
-    if handler == libc::SIG_DFL || handler == current_handler_raw() {
+    if handler == libc::SIG_DFL || handler == current_handler_raw {
         unsafe {
             raise_with_default(signum);
         }
@@ -115,14 +143,50 @@ unsafe fn chain_previous(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c
     simple_handler(signum);
 }
 
+#[cfg(target_arch = "aarch64")]
+unsafe fn maybe_remap_fault_pc(uctx: *mut c_void) {
+    let original_pc = crate::replay::take_fault_pc_remap();
+    if let Some(original_pc) = original_pc {
+        unsafe {
+            crate::context::rewrite_signal_pc(uctx as *mut libc::ucontext_t, original_pc);
+        }
+    }
+}
+
+struct ActiveTrapGuard;
+
+impl ActiveTrapGuard {
+    fn enter() -> Self {
+        ACTIVE_TRAP_HANDLERS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for ActiveTrapGuard {
+    fn drop(&mut self) {
+        ACTIVE_TRAP_HANDLERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub(crate) fn wait_for_trap_handlers_quiescent() -> Result<(), SigHookError> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ACTIVE_TRAP_HANDLERS.load(Ordering::Acquire) != 0 {
+        if Instant::now() >= deadline {
+            return Err(SigHookError::PatchSynchronizationFailed);
+        }
+        std::thread::yield_now();
+    }
+    Ok(())
+}
+
 #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
 extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c_void) {
-    use crate::context::{free_ctx, remap_ctx, write_back_ctx};
+    use crate::context::{remap_ctx, write_back_ctx};
     use crate::memory::{is_brk, read_u32};
 
     if info.is_null() || uctx.is_null() {
         unsafe {
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
@@ -130,45 +194,40 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
     let uc = unsafe { &mut *(uctx as *mut libc::ucontext_t) };
     if uc.uc_mcontext.is_null() {
         unsafe {
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
     let uc_ptr = uctx as *mut libc::ucontext_t;
-    let ctx_ptr = unsafe { remap_ctx(uc_ptr) };
-    if ctx_ptr.is_null() {
+    let Some(mut ctx) = (unsafe { remap_ctx(uc_ptr) }) else {
         unsafe {
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
-    }
+    };
 
-    let ctx = unsafe { &mut *ctx_ptr };
     let trap_address = ctx.pc;
+    let ctx_ptr: *mut crate::context::HookContext = &mut ctx;
+    let managed_trap = unsafe { state::trap_slot_by_address(trap_address).is_some() };
 
-    let opcode = read_u32(trap_address);
-    if !is_brk(opcode) {
+    if !managed_trap && !is_brk(read_u32(trap_address)) {
         unsafe {
-            free_ctx(ctx_ptr);
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
-    let handled = handle_trap_aarch64(trap_address, ctx_ptr);
-
-    if !handled {
+    let _guard = ActiveTrapGuard::enter();
+    if !handle_trap_aarch64(trap_address, ctx_ptr) {
         unsafe {
-            free_ctx(ctx_ptr);
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
     unsafe {
-        write_back_ctx(uc_ptr, ctx_ptr);
-        free_ctx(ctx_ptr);
+        write_back_ctx(uc_ptr, &ctx);
     }
 }
 
@@ -177,113 +236,122 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
     target_arch = "aarch64"
 ))]
 extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c_void) {
-    use crate::context::{free_ctx, remap_ctx, write_back_ctx};
+    use crate::context::{remap_ctx, write_back_ctx};
     use crate::memory::{is_brk, read_u32};
 
     if info.is_null() || uctx.is_null() {
         unsafe {
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
     let uc_ptr = uctx as *mut libc::ucontext_t;
-    let ctx_ptr = unsafe { remap_ctx(uc_ptr) };
-    let ctx = unsafe { &mut *ctx_ptr };
-    let trap_address = ctx.pc;
-
-    let opcode = read_u32(trap_address);
-    if !is_brk(opcode) {
+    let Some(mut ctx) = (unsafe { remap_ctx(uc_ptr) }) else {
         unsafe {
-            free_ctx(ctx_ptr);
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
+        }
+        return;
+    };
+    let trap_address = ctx.pc;
+    let ctx_ptr: *mut crate::context::HookContext = &mut ctx;
+    let managed_trap = unsafe { state::trap_slot_by_address(trap_address).is_some() };
+
+    if !managed_trap && !is_brk(read_u32(trap_address)) {
+        unsafe {
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
-    let handled = handle_trap_aarch64(trap_address, ctx_ptr);
-
-    if !handled {
+    let _guard = ActiveTrapGuard::enter();
+    if !handle_trap_aarch64(trap_address, ctx_ptr) {
         unsafe {
-            free_ctx(ctx_ptr);
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
     unsafe {
-        write_back_ctx(uc_ptr, ctx_ptr);
-        free_ctx(ctx_ptr);
+        write_back_ctx(uc_ptr, &ctx);
     }
 }
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c_void) {
-    use crate::context::{free_ctx, remap_ctx, write_back_ctx};
+    use crate::context::{remap_ctx, write_back_ctx};
     use crate::memory::{is_int3, read_u8};
 
     if info.is_null() || uctx.is_null() {
         unsafe {
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
     let uc_ptr = uctx as *mut libc::ucontext_t;
-    let ctx_ptr = unsafe { remap_ctx(uc_ptr) };
-    if ctx_ptr.is_null() {
+    let Some(mut ctx) = (unsafe { remap_ctx(uc_ptr) }) else {
         unsafe {
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
-    }
-
-    let ctx = unsafe { &mut *ctx_ptr };
+    };
+    let ctx_ptr: *mut crate::context::HookContext = &mut ctx;
 
     if ctx.rip == 0 {
         unsafe {
-            free_ctx(ctx_ptr);
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
     let trap_address = ctx.rip.wrapping_sub(1);
-    let opcode = read_u8(trap_address);
-    if !is_int3(opcode) {
+    let managed_trap = unsafe { state::trap_slot_by_address(trap_address).is_some() };
+    if !managed_trap && !is_int3(read_u8(trap_address)) {
         unsafe {
-            free_ctx(ctx_ptr);
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
-    let handled = handle_trap_x86_64(trap_address, ctx_ptr, |ctx_ptr, next_pc, trampoline_pc| {
+    let _guard = ActiveTrapGuard::enter();
+    if !handle_trap_x86_64(trap_address, ctx_ptr, |ctx_ptr, next_pc, trampoline_pc| {
         let ctx = unsafe { &mut *ctx_ptr };
         if trampoline_pc != 0 {
             ctx.rip = trampoline_pc;
         } else {
             ctx.rip = next_pc;
         }
-    });
-
-    if !handled {
+    }) {
         unsafe {
-            free_ctx(ctx_ptr);
-            chain_previous(signum, info, uctx);
+            chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
     unsafe {
-        write_back_ctx(uc_ptr, ctx_ptr);
-        free_ctx(ctx_ptr);
+        write_back_ctx(uc_ptr, &ctx);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+extern "C" fn fault_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c_void) {
+    if info.is_null() || uctx.is_null() {
+        unsafe {
+            chain_previous(signum, info, uctx, current_fault_handler_raw());
+        }
+        return;
+    }
+
+    unsafe {
+        maybe_remap_fault_pc(uctx);
+        chain_previous(signum, info, uctx, current_fault_handler_raw());
     }
 }
 
 #[cfg(target_arch = "aarch64")]
 fn handle_trap_aarch64(address: u64, ctx_ptr: *mut crate::context::HookContext) -> bool {
-    let slot = unsafe { state::slot_by_address(address) };
+    let slot = unsafe { state::trap_slot_by_address(address) };
     let slot = match slot {
         Some(slot) => slot,
         None => return false,
@@ -337,7 +405,7 @@ fn handle_trap_x86_64(
     ctx_ptr: *mut crate::context::HookContext,
     set_pc: impl FnOnce(*mut crate::context::HookContext, u64, u64),
 ) -> bool {
-    let slot = unsafe { state::slot_by_address(address) };
+    let slot = unsafe { state::trap_slot_by_address(address) };
     let slot = match slot {
         Some(slot) => slot,
         None => return false,
@@ -378,12 +446,12 @@ fn handle_trap_x86_64(
     true
 }
 
-fn install_signal(signum: c_int) -> Result<(), SigHookError> {
+fn install_signal(signum: c_int, handler: libc::sighandler_t) -> Result<(), SigHookError> {
     unsafe {
         let mut act: libc::sigaction = zeroed();
         let mut previous_action: libc::sigaction = zeroed();
         act.sa_flags = libc::SA_SIGINFO;
-        act.sa_sigaction = trap_handler as *const () as usize;
+        act.sa_sigaction = handler as usize;
 
         if libc::sigemptyset(&mut act.sa_mask) != 0 {
             return Err(SigHookError::SigEmptySetFailed {
@@ -406,17 +474,19 @@ fn install_signal(signum: c_int) -> Result<(), SigHookError> {
 }
 
 pub(crate) unsafe fn ensure_handlers_installed() -> Result<(), SigHookError> {
-    if unsafe { state::HANDLERS_INSTALLED } {
+    if state::HANDLERS_INSTALLED.load(Ordering::Acquire) {
         return Ok(());
     }
 
-    install_signal(libc::SIGTRAP)?;
+    install_signal(libc::SIGTRAP, current_trap_handler_raw())?;
 
     #[cfg(target_arch = "aarch64")]
-    install_signal(libc::SIGILL)?;
-
-    unsafe {
-        state::HANDLERS_INSTALLED = true;
+    {
+        install_signal(libc::SIGILL, current_trap_handler_raw())?;
+        install_signal(libc::SIGSEGV, current_fault_handler_raw())?;
+        install_signal(libc::SIGBUS, current_fault_handler_raw())?;
     }
+
+    state::HANDLERS_INSTALLED.store(true, Ordering::Release);
     Ok(())
 }

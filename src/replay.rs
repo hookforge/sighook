@@ -27,6 +27,7 @@
 //!   understand.
 
 use crate::context::HookContext;
+use std::cell::Cell;
 
 /// Concrete execute-original strategy chosen for a displaced AArch64 instruction.
 ///
@@ -48,6 +49,11 @@ pub(crate) enum ReplayPlan {
     /// This preserves the old execute-original behavior: an out-of-line trampoline
     /// runs a copy of the displaced bytes and then returns to the original stream.
     Trampoline,
+
+    /// `nop`
+    ///
+    /// Replay only needs to advance `pc`.
+    Nop,
 
     /// `adr xd, label`
     ///
@@ -96,14 +102,43 @@ pub(crate) enum ReplayPlan {
     /// register or memory state, so replay only needs to advance `pc`.
     PrfmLiteral { literal_address: u64 },
 
+    /// `add` / `sub` / `adds` / `subs` (shifted register)
+    ///
+    /// Replay stores the operand registers and shift information so the arithmetic
+    /// can run directly from saved context without relying on the trampoline page.
+    AddSubShiftedRegister {
+        rd: u8,
+        rn: u8,
+        rm: u8,
+        shift_type: u8,
+        shift_amount: u8,
+        is_64bit: bool,
+        is_subtract: bool,
+        sets_flags: bool,
+    },
+
     /// `b label`
     Branch { target: u64 },
+
+    /// `br xn`
+    BranchRegister { rn: u8 },
 
     /// `bl label`
     ///
     /// Replay must update `x30` (`lr`) to the sequential next instruction before
     /// transferring control to the branch target.
     BranchWithLink { target: u64 },
+
+    /// `blr xn`
+    ///
+    /// Replay reads the indirect target from the saved context and updates `x30`
+    /// exactly as an in-place `blr` would.
+    BranchWithLinkRegister { rn: u8 },
+
+    /// `ret xn`
+    ///
+    /// Replay transfers control to the saved register value directly.
+    Return { rn: u8 },
 
     /// `b.<cond> label`
     ///
@@ -148,6 +183,14 @@ impl ReplayPlan {
 const ADR_MASK: u32 = 0x9F00_0000;
 const ADR_OPCODE: u32 = 0x1000_0000;
 const ADRP_OPCODE: u32 = 0x9000_0000;
+const NOP_OPCODE: u32 = 0xD503_201F;
+
+const BR_MASK: u32 = 0xFFFF_FC1F;
+const BR_OPCODE: u32 = 0xD61F_0000;
+const BLR_OPCODE: u32 = 0xD63F_0000;
+const RET_OPCODE: u32 = 0xD65F_0000;
+const ADD_SUB_SHIFTED_REG_MASK: u32 = 0x1F20_0000;
+const ADD_SUB_SHIFTED_REG_OPCODE: u32 = 0x0B00_0000;
 
 const LDR_LITERAL_W_OPCODE: u32 = 0x1800_0000;
 const LDR_LITERAL_X_OPCODE: u32 = 0x5800_0000;
@@ -156,6 +199,21 @@ const LDR_LITERAL_D_OPCODE: u32 = 0x5C00_0000;
 const LDR_LITERAL_Q_OPCODE: u32 = 0x9C00_0000;
 const LDRSW_LITERAL_OPCODE: u32 = 0x9800_0000;
 const PRFM_LITERAL_OPCODE: u32 = 0xD800_0000;
+
+#[derive(Copy, Clone)]
+struct FaultRemapState {
+    active: bool,
+    original_pc: u64,
+}
+
+thread_local! {
+    static FAULT_REMAP_STATE: Cell<FaultRemapState> = const {
+        Cell::new(FaultRemapState {
+            active: false,
+            original_pc: 0,
+        })
+    };
+}
 
 /// Chooses how the displaced instruction should be executed later.
 ///
@@ -166,9 +224,10 @@ pub(crate) fn decode_replay_plan(address: u64, opcode: u32, execute_original: bo
         return ReplayPlan::Skip;
     }
 
-    // If we recognize a PC-relative family, store enough pre-resolved information to
-    // emulate it directly later. Otherwise preserve the older trampoline behavior.
-    decode_pc_relative_plan(address, opcode).unwrap_or(ReplayPlan::Trampoline)
+    // If we recognize a family that can be replayed directly from saved context,
+    // store enough pre-resolved information to emulate it later. Otherwise preserve
+    // the older trampoline behavior.
+    decode_direct_replay_plan(address, opcode).unwrap_or(ReplayPlan::Trampoline)
 }
 
 /// Applies a previously computed replay plan to the saved hook context.
@@ -199,6 +258,10 @@ pub(crate) fn apply_replay_plan(
         // `false` here makes accidental calls obviously invalid instead of silently
         // pretending the replay succeeded.
         ReplayPlan::Trampoline => false,
+        ReplayPlan::Nop => {
+            ctx.pc = next_pc;
+            true
+        }
         ReplayPlan::Adr { rd, absolute } => {
             write_x(ctx, rd, absolute);
             ctx.pc = next_pc;
@@ -215,7 +278,7 @@ pub(crate) fn apply_replay_plan(
         } => {
             // A 32-bit integer literal load writes the architectural `wT` view, which
             // zero-extends into `xT`.
-            let value = unsafe { read_u32(literal_address) };
+            let value = with_fault_pc_remap(address, || unsafe { read_u32(literal_address) });
             write_w(ctx, rt, value);
             ctx.pc = next_pc;
             true
@@ -224,7 +287,7 @@ pub(crate) fn apply_replay_plan(
             rt,
             literal_address,
         } => {
-            let value = unsafe { read_u64(literal_address) };
+            let value = with_fault_pc_remap(address, || unsafe { read_u64(literal_address) });
             write_x(ctx, rt, value);
             ctx.pc = next_pc;
             true
@@ -235,7 +298,7 @@ pub(crate) fn apply_replay_plan(
         } => {
             // Scalar FP literal loads update the low element and clear the rest of
             // the vector register, matching hardware's scalar-register semantics.
-            let value = unsafe { read_u32(literal_address) };
+            let value = with_fault_pc_remap(address, || unsafe { read_u32(literal_address) });
             write_s(ctx, rt, value);
             ctx.pc = next_pc;
             true
@@ -244,7 +307,7 @@ pub(crate) fn apply_replay_plan(
             rt,
             literal_address,
         } => {
-            let value = unsafe { read_u64(literal_address) };
+            let value = with_fault_pc_remap(address, || unsafe { read_u64(literal_address) });
             write_d(ctx, rt, value);
             ctx.pc = next_pc;
             true
@@ -253,7 +316,7 @@ pub(crate) fn apply_replay_plan(
             rt,
             literal_address,
         } => {
-            let value = unsafe { read_u128_bytes(literal_address) };
+            let value = with_fault_pc_remap(address, || unsafe { read_u128_bytes(literal_address) });
             write_q(ctx, rt, value);
             ctx.pc = next_pc;
             true
@@ -262,7 +325,7 @@ pub(crate) fn apply_replay_plan(
             rt,
             literal_address,
         } => {
-            let value = unsafe { read_i32(literal_address) };
+            let value = with_fault_pc_remap(address, || unsafe { read_i32(literal_address) });
             write_x(ctx, rt, value as i64 as u64);
             ctx.pc = next_pc;
             true
@@ -275,13 +338,77 @@ pub(crate) fn apply_replay_plan(
             ctx.pc = next_pc;
             true
         }
+        ReplayPlan::AddSubShiftedRegister {
+            rd,
+            rn,
+            rm,
+            shift_type,
+            shift_amount,
+            is_64bit,
+            is_subtract,
+            sets_flags,
+        } => {
+            if is_64bit {
+                let left = read_x(ctx, rn);
+                let right = shift_u64(read_x(ctx, rm), shift_type, shift_amount);
+                let (result, c, v) = if is_subtract {
+                    let result = left.wrapping_sub(right);
+                    let carry = left >= right;
+                    let overflow = (((left ^ right) & (left ^ result)) >> 63) != 0;
+                    (result, carry, overflow)
+                } else {
+                    let result = left.wrapping_add(right);
+                    let carry = result < left;
+                    let overflow = (((!(left ^ right)) & (left ^ result)) >> 63) != 0;
+                    (result, carry, overflow)
+                };
+                write_x(ctx, rd, result);
+                if sets_flags {
+                    write_nzcv(ctx, result >> 63 != 0, result == 0, c, v);
+                }
+            } else {
+                let left = read_w(ctx, rn);
+                let right = shift_u32(read_w(ctx, rm), shift_type, shift_amount);
+                let (result, c, v) = if is_subtract {
+                    let result = left.wrapping_sub(right);
+                    let carry = left >= right;
+                    let overflow = (((left ^ right) & (left ^ result)) >> 31) != 0;
+                    (result, carry, overflow)
+                } else {
+                    let result = left.wrapping_add(right);
+                    let carry = result < left;
+                    let overflow = (((!(left ^ right)) & (left ^ result)) >> 31) != 0;
+                    (result, carry, overflow)
+                };
+                write_w(ctx, rd, result);
+                if sets_flags {
+                    write_nzcv(ctx, result >> 31 != 0, result == 0, c, v);
+                }
+            }
+            ctx.pc = next_pc;
+            true
+        }
         ReplayPlan::Branch { target } => {
             ctx.pc = target;
+            true
+        }
+        ReplayPlan::BranchRegister { rn } => {
+            ctx.pc = read_x(ctx, rn);
             true
         }
         ReplayPlan::BranchWithLink { target } => {
             write_x(ctx, 30, next_pc);
             ctx.pc = target;
+            true
+        }
+        ReplayPlan::BranchWithLinkRegister { rn } => {
+            let target = read_x(ctx, rn);
+            write_x(ctx, 30, next_pc);
+            ctx.pc = target;
+            true
+        }
+        ReplayPlan::Return { rn } => {
+            ctx.pc = read_x(ctx, rn);
             true
         }
         ReplayPlan::ConditionalBranch { cond, target } => {
@@ -343,16 +470,24 @@ pub(crate) fn apply_replay_plan(
     }
 }
 
-/// Attempts to recognize PC-relative instruction families that cannot safely run
-/// from the trampoline address.
+/// Attempts to recognize instruction families that can be replayed directly from
+/// saved context.
 ///
-/// The decoding style here is intentionally simple:
-/// - first use coarse opcode masks to identify an instruction family,
-/// - then extract only the fields needed for replay,
-/// - finally pre-resolve absolute targets or addresses wherever possible.
+/// For PC-relative families, replay pre-resolves absolute targets or addresses so
+/// the signal path never has to reason about the trampoline location. For simple
+/// non-PC-relative control-flow and no-op instructions, replay stores only the
+/// register numbers needed at trap time.
 ///
 /// This keeps the later trap path branchy but mechanically straightforward.
-fn decode_pc_relative_plan(address: u64, opcode: u32) -> Option<ReplayPlan> {
+fn decode_direct_replay_plan(address: u64, opcode: u32) -> Option<ReplayPlan> {
+    if opcode == NOP_OPCODE {
+        return Some(ReplayPlan::Nop);
+    }
+
+    if let Some(plan) = decode_add_sub_shifted_register(opcode) {
+        return Some(plan);
+    }
+
     let op_major = opcode & 0xFF00_0000;
 
     match op_major {
@@ -431,9 +566,27 @@ fn decode_pc_relative_plan(address: u64, opcode: u32) -> Option<ReplayPlan> {
         });
     }
 
+    if (opcode & BR_MASK) == BR_OPCODE {
+        return Some(ReplayPlan::BranchRegister {
+            rn: ((opcode >> 5) & 0x1F) as u8,
+        });
+    }
+
     if (opcode & 0xFC00_0000) == 0x9400_0000 {
         return Some(ReplayPlan::BranchWithLink {
             target: address.wrapping_add_signed(sign_extend(opcode & 0x03FF_FFFF, 26) << 2),
+        });
+    }
+
+    if (opcode & BR_MASK) == BLR_OPCODE {
+        return Some(ReplayPlan::BranchWithLinkRegister {
+            rn: ((opcode >> 5) & 0x1F) as u8,
+        });
+    }
+
+    if (opcode & BR_MASK) == RET_OPCODE {
+        return Some(ReplayPlan::Return {
+            rn: ((opcode >> 5) & 0x1F) as u8,
         });
     }
 
@@ -496,6 +649,43 @@ fn sign_extend(value: u32, bits: u32) -> i64 {
 }
 
 #[inline]
+fn decode_add_sub_shifted_register(opcode: u32) -> Option<ReplayPlan> {
+    if (opcode & ADD_SUB_SHIFTED_REG_MASK) != ADD_SUB_SHIFTED_REG_OPCODE {
+        return None;
+    }
+
+    let rd = (opcode & 0x1F) as u8;
+    let rn = ((opcode >> 5) & 0x1F) as u8;
+    let rm = ((opcode >> 16) & 0x1F) as u8;
+    let shift_type = ((opcode >> 22) & 0x3) as u8;
+    let shift_amount = ((opcode >> 10) & 0x3F) as u8;
+    let is_64bit = ((opcode >> 31) & 0x1) != 0;
+
+    if rd >= 31 || rn >= 31 || rm >= 31 {
+        return None;
+    }
+
+    if shift_type == 0x3 {
+        return None;
+    }
+
+    if !is_64bit && shift_amount >= 32 {
+        return None;
+    }
+
+    Some(ReplayPlan::AddSubShiftedRegister {
+        rd,
+        rn,
+        rm,
+        shift_type,
+        shift_amount,
+        is_64bit,
+        is_subtract: ((opcode >> 30) & 0x1) != 0,
+        sets_flags: ((opcode >> 29) & 0x1) != 0,
+    })
+}
+
+#[inline]
 /// Reads a general-purpose register from the saved context.
 ///
 /// Register number 31 is encoded in some AArch64 instructions as `xzr/wzr` or `sp`,
@@ -540,6 +730,13 @@ fn write_x(ctx: &mut HookContext, reg: u8, value: u64) {
 /// Hardware zero-extends `wN` writes into `xN`, so replay uses the same behavior.
 fn write_w(ctx: &mut HookContext, reg: u8, value: u32) {
     write_x(ctx, reg, value as u64);
+}
+
+#[inline]
+fn write_nzcv(ctx: &mut HookContext, n: bool, z: bool, c: bool, v: bool) {
+    let mut cpsr = ctx.cpsr & !(0xFu32 << 28);
+    cpsr |= (u32::from(n) << 31) | (u32::from(z) << 30) | (u32::from(c) << 29) | (u32::from(v) << 28);
+    ctx.cpsr = cpsr;
 }
 
 #[inline]
@@ -608,9 +805,58 @@ fn condition_holds(cpsr: u32, cond: u8) -> bool {
         0xB => n != v,
         0xC => !z && (n == v),
         0xD => z || (n != v),
-        0xE => true,
+        0xE | 0xF => true,
         _ => false,
     }
+}
+
+#[inline]
+fn shift_u32(value: u32, shift_type: u8, shift_amount: u8) -> u32 {
+    match shift_type {
+        0 => value.wrapping_shl(shift_amount as u32),
+        1 => value.wrapping_shr(shift_amount as u32),
+        2 => ((value as i32) >> shift_amount) as u32,
+        _ => unreachable!("invalid AArch64 shift type"),
+    }
+}
+
+#[inline]
+fn shift_u64(value: u64, shift_type: u8, shift_amount: u8) -> u64 {
+    match shift_type {
+        0 => value.wrapping_shl(shift_amount as u32),
+        1 => value.wrapping_shr(shift_amount as u32),
+        2 => ((value as i64) >> shift_amount) as u64,
+        _ => unreachable!("invalid AArch64 shift type"),
+    }
+}
+
+#[inline]
+fn with_fault_pc_remap<T>(original_pc: u64, f: impl FnOnce() -> T) -> T {
+    FAULT_REMAP_STATE.set(FaultRemapState {
+        active: true,
+        original_pc,
+    });
+    let value = f();
+    FAULT_REMAP_STATE.set(FaultRemapState {
+        active: false,
+        original_pc: 0,
+    });
+    value
+}
+
+pub(crate) fn take_fault_pc_remap() -> Option<u64> {
+    FAULT_REMAP_STATE.with(|state| {
+        let current = state.get();
+        if !current.active {
+            return None;
+        }
+
+        state.set(FaultRemapState {
+            active: false,
+            original_pc: 0,
+        });
+        Some(current.original_pc)
+    })
 }
 
 #[inline]
@@ -662,6 +908,19 @@ mod tests {
 
     #[test]
     fn decode_common_pc_relative_families() {
+        assert_eq!(
+            decode_replay_plan(0x1000, 0x0B09_0100, true),
+            ReplayPlan::AddSubShiftedRegister {
+                rd: 0,
+                rn: 8,
+                rm: 9,
+                shift_type: 0,
+                shift_amount: 0,
+                is_64bit: false,
+                is_subtract: false,
+                sets_flags: false,
+            }
+        );
         assert_eq!(
             decode_replay_plan(0x1000, 0x1000_0200, true),
             ReplayPlan::Adr {
@@ -851,6 +1110,57 @@ mod tests {
         ));
         assert_eq!(ctx.pc, 0x9000);
         assert_eq!(unsafe { ctx.regs.x[30] }, 0x8004);
+    }
+
+    #[test]
+    fn apply_add_sub_shifted_register_updates_registers_and_flags() {
+        let mut ctx = empty_ctx();
+        unsafe {
+            ctx.regs.x[8] = 40;
+            ctx.regs.x[9] = 2;
+        }
+
+        assert!(apply_replay_plan(
+            ReplayPlan::AddSubShiftedRegister {
+                rd: 0,
+                rn: 8,
+                rm: 9,
+                shift_type: 0,
+                shift_amount: 0,
+                is_64bit: false,
+                is_subtract: false,
+                sets_flags: false,
+            },
+            &mut ctx,
+            0x7000,
+            4,
+        ));
+        assert_eq!(unsafe { ctx.regs.x[0] }, 42);
+        assert_eq!(ctx.pc, 0x7004);
+
+        unsafe {
+            ctx.regs.x[8] = 1;
+            ctx.regs.x[9] = 2;
+        }
+        assert!(apply_replay_plan(
+            ReplayPlan::AddSubShiftedRegister {
+                rd: 10,
+                rn: 8,
+                rm: 9,
+                shift_type: 0,
+                shift_amount: 0,
+                is_64bit: false,
+                is_subtract: true,
+                sets_flags: true,
+            },
+            &mut ctx,
+            0x7100,
+            4,
+        ));
+        assert_eq!(unsafe { ctx.regs.x[10] }, u32::MAX as u64);
+        assert_ne!(ctx.cpsr & (1 << 31), 0);
+        assert_eq!(ctx.cpsr & (1 << 30), 0);
+        assert_eq!(ctx.cpsr & (1 << 29), 0);
     }
 
     #[test]

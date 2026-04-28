@@ -55,6 +55,7 @@ pub enum SigHookError {
         errno: c_int,
     },
     InstrumentSlotsFull,
+    PatchSynchronizationFailed,
     BranchOutOfRange,
     PatchTooLong {
         patch_len: usize,
@@ -137,6 +138,9 @@ impl fmt::Display for SigHookError {
                 write!(f, "sigaction failed (signum={signum}, errno={errno})")
             }
             SigHookError::InstrumentSlotsFull => write!(f, "instrument slots are full"),
+            SigHookError::PatchSynchronizationFailed => {
+                write!(f, "patch synchronization with peer threads failed")
+            }
             SigHookError::BranchOutOfRange => write!(f, "branch target out of range"),
             SigHookError::PatchTooLong {
                 patch_len,

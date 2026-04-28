@@ -9,7 +9,10 @@ use crate::constants::VM_PROT_COPY;
 #[cfg(target_arch = "aarch64")]
 use crate::constants::{BRK_MASK, BRK_OPCODE};
 use crate::error::SigHookError;
+use crate::patch_sync;
 use libc::{c_int, c_void};
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::fs;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 unsafe extern "C" {
@@ -104,6 +107,95 @@ fn protect_range_start_len(address: usize, len: usize, page_size: usize) -> (usi
     let end_page = end_inclusive & !(page_size - 1);
     let total = (end_page + page_size) - start;
     (start, total)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[derive(Copy, Clone)]
+struct LinuxProtectionRange {
+    start: usize,
+    len: usize,
+    prot: c_int,
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn linux_restore_protection_ranges(
+    start: usize,
+    len: usize,
+) -> Result<Vec<LinuxProtectionRange>, SigHookError> {
+    let maps = fs::read_to_string("/proc/self/maps").map_err(|_| SigHookError::InvalidAddress)?;
+    let end = start.checked_add(len).ok_or(SigHookError::InvalidAddress)?;
+    let mut ranges = Vec::new();
+    let mut covered_until = start;
+
+    for line in maps.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(range_field) = parts.next() else {
+            continue;
+        };
+        let Some(perms) = parts.next() else {
+            continue;
+        };
+        let Some((map_start, map_end)) = parse_proc_maps_range(range_field) else {
+            continue;
+        };
+        if map_end <= start || map_start >= end {
+            continue;
+        }
+
+        let overlap_start = map_start.max(start);
+        let overlap_end = map_end.min(end);
+        let prot = parse_proc_maps_perms(perms)?;
+
+        if overlap_start > covered_until {
+            return Err(SigHookError::InvalidAddress);
+        }
+        if overlap_end > covered_until {
+            ranges.push(LinuxProtectionRange {
+                start: overlap_start,
+                len: overlap_end - overlap_start,
+                prot,
+            });
+            covered_until = overlap_end;
+            if covered_until >= end {
+                break;
+            }
+        }
+    }
+
+    if covered_until != end {
+        return Err(SigHookError::InvalidAddress);
+    }
+
+    Ok(ranges)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn parse_proc_maps_range(field: &str) -> Option<(usize, usize)> {
+    let (start, end) = field.split_once('-')?;
+    Some((
+        usize::from_str_radix(start, 16).ok()?,
+        usize::from_str_radix(end, 16).ok()?,
+    ))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn parse_proc_maps_perms(perms: &str) -> Result<c_int, SigHookError> {
+    let bytes = perms.as_bytes();
+    if bytes.len() < 3 {
+        return Err(SigHookError::InvalidAddress);
+    }
+
+    let mut prot = 0;
+    if bytes[0] == b'r' {
+        prot |= libc::PROT_READ;
+    }
+    if bytes[1] == b'w' {
+        prot |= libc::PROT_WRITE;
+    }
+    if bytes[2] == b'x' {
+        prot |= libc::PROT_EXEC;
+    }
+    Ok(prot)
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -302,111 +394,115 @@ fn patch_bytes(address: u64, bytes: &[u8]) -> Result<Vec<u8>, SigHookError> {
     let addr = address as usize;
     let (protect_start, protect_len) = protect_range_start_len(addr, bytes.len(), page_size);
 
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
-        // Apple code pages are commonly copy-on-write mappings, so `VM_PROT_COPY`
-        // keeps the kernel happy while we temporarily enable writes.
-        let writable_prot = libc::VM_PROT_READ | libc::VM_PROT_WRITE | VM_PROT_COPY;
-
-        let kr = unsafe {
-            mach_vm_protect(
-                libc::mach_task_self(),
-                protect_start as u64,
-                protect_len as u64,
-                0,
-                writable_prot,
-            )
-        };
-
-        if kr != 0 {
-            return Err(SigHookError::ProtectWritableFailed {
-                kr,
-                errno: last_errno(),
-            });
-        }
-    }
-
     #[cfg(all(
         any(target_os = "linux", target_os = "android"),
         any(target_arch = "aarch64", target_arch = "x86_64")
     ))]
-    {
-        let result = unsafe {
-            libc::mprotect(
-                protect_start as *mut c_void,
-                protect_len,
-                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-            )
-        };
+    let restore_ranges = linux_restore_protection_ranges(protect_start, protect_len)?;
 
-        if result != 0 {
-            return Err(SigHookError::ProtectWritableFailed {
-                errno: last_errno(),
-            });
-        }
-    }
+    patch_sync::with_threads_paused(|| {
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            // Apple code pages are commonly copy-on-write mappings, so `VM_PROT_COPY`
+            // keeps the kernel happy while we temporarily enable writes.
+            let writable_prot = libc::VM_PROT_READ | libc::VM_PROT_WRITE | VM_PROT_COPY;
 
-    let mut original = vec![0u8; bytes.len()];
-    unsafe {
-        std::ptr::copy_nonoverlapping(addr as *const u8, original.as_mut_ptr(), bytes.len());
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len());
-    }
-
-    // On AArch64, newly written instructions are not guaranteed to be visible to the
-    // I-cache until we explicitly invalidate the affected range.
-    flush_instruction_cache(addr as *mut c_void, bytes.len());
-
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
-        let mut last_kr = 0;
-        for &prot in executable_restore_protections() {
-            let kr_restore = unsafe {
+            let kr = unsafe {
                 mach_vm_protect(
                     libc::mach_task_self(),
                     protect_start as u64,
                     protect_len as u64,
                     0,
-                    prot,
+                    writable_prot,
                 )
             };
 
-            if kr_restore == 0 {
-                last_kr = 0;
-                break;
+            if kr != 0 {
+                return Err(SigHookError::ProtectWritableFailed {
+                    kr,
+                    errno: last_errno(),
+                });
+            }
+        }
+
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ))]
+        {
+            let result = unsafe {
+                libc::mprotect(
+                    protect_start as *mut c_void,
+                    protect_len,
+                    libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                )
+            };
+
+            if result != 0 {
+                return Err(SigHookError::ProtectWritableFailed {
+                    errno: last_errno(),
+                });
+            }
+        }
+
+        let mut original = vec![0u8; bytes.len()];
+        unsafe {
+            std::ptr::copy_nonoverlapping(addr as *const u8, original.as_mut_ptr(), bytes.len());
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len());
+        }
+
+        // On AArch64, newly written instructions are not guaranteed to be visible to the
+        // I-cache until we explicitly invalidate the affected range.
+        flush_instruction_cache(addr as *mut c_void, bytes.len());
+
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            let mut last_kr = 0;
+            for &prot in executable_restore_protections() {
+                let kr_restore = unsafe {
+                    mach_vm_protect(
+                        libc::mach_task_self(),
+                        protect_start as u64,
+                        protect_len as u64,
+                        0,
+                        prot,
+                    )
+                };
+
+                if kr_restore == 0 {
+                    last_kr = 0;
+                    break;
+                }
+
+                last_kr = kr_restore;
             }
 
-            last_kr = kr_restore;
+            if last_kr != 0 {
+                return Err(SigHookError::ProtectExecutableFailed {
+                    kr: last_kr,
+                    errno: last_errno(),
+                });
+            }
         }
 
-        if last_kr != 0 {
-            return Err(SigHookError::ProtectExecutableFailed {
-                kr: last_kr,
-                errno: last_errno(),
-            });
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ))]
+        {
+            for range in &restore_ranges {
+                let result =
+                    unsafe { libc::mprotect(range.start as *mut c_void, range.len, range.prot) };
+                if result != 0 {
+                    return Err(SigHookError::ProtectExecutableFailed {
+                        errno: last_errno(),
+                    });
+                }
+            }
         }
-    }
 
-    #[cfg(all(
-        any(target_os = "linux", target_os = "android"),
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    ))]
-    {
-        let result = unsafe {
-            libc::mprotect(
-                protect_start as *mut c_void,
-                protect_len,
-                libc::PROT_READ | libc::PROT_EXEC,
-            )
-        };
-
-        if result != 0 {
-            return Err(SigHookError::ProtectExecutableFailed {
-                errno: last_errno(),
-            });
-        }
-    }
-
-    Ok(original)
+        Ok(original)
+    })
 }
 
 pub(crate) fn read_bytes(address: u64, len: usize) -> Result<Vec<u8>, SigHookError> {

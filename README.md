@@ -230,8 +230,8 @@ iOS executable pages are code-signed. In normal (non-jailbreak) runtime environm
 ## API Notes
 
 - `instrument(...)` executes original instruction through an internal trampoline when needed.
-- On `aarch64`, `instrument(...)` precomputes direct replay for common displaced PC-relative instructions: `adr`, `adrp`, literal `ldr` / `ldrsw` / `prfm`, `b` / `bl` / `b.cond`, `cbz` / `cbnz`, and `tbz` / `tbnz`.
-- Other `aarch64` PC-relative forms are still not guaranteed safe in execute-original mode. For those patch points, prefer `instrument_no_original(...)` and emulate the original instruction in callback.
+- On `aarch64`, `instrument(...)` precomputes direct replay for common displaced instructions: `nop`, `br` / `blr` / `ret`, `adr`, `adrp`, literal `ldr` / `ldrsw` / `prfm`, `b` / `bl` / `b.cond`, `cbz` / `cbnz`, and `tbz` / `tbnz`.
+- Other `aarch64` patch points are still not guaranteed safe in execute-original mode. Unsupported execute-original installs return `UnsupportedOperation` instead of silently falling back to an inexact trampoline. For those patch points, prefer `instrument_no_original(...)` and emulate the original instruction in callback.
 - On `x86_64`, RIP-relative execute-original patch points are still unsupported (for example `lea` / `mov` using `[rip + disp]`).
 - `instrument_no_original(...)` skips original instruction unless callback changes control-flow register (`pc`/`rip`).
 - `HookContext` exposes FP/SIMD state in `ctx.fpregs`:

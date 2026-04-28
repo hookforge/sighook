@@ -343,14 +343,14 @@ fn zeroed_fpregs() -> FpRegisters {
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
-pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
+pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> Option<HookContext> {
     if uc.is_null() {
-        return std::ptr::null_mut();
+        return None;
     }
 
     let mcontext = unsafe { (*uc).uc_mcontext };
     if mcontext.is_null() {
-        return std::ptr::null_mut();
+        return None;
     }
 
     let ss = unsafe { &(*mcontext).__ss };
@@ -376,21 +376,19 @@ pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
     fpregs.fpsr = ns.__fpsr;
     fpregs.fpcr = ns.__fpcr;
 
-    let ctx = HookContext {
+    Some(HookContext {
         regs: XRegisters { x: regs },
         sp: ss.__sp,
         pc: ss.__pc,
         cpsr: ss.__cpsr,
         pad: ss.__pad,
         fpregs,
-    };
-
-    Box::into_raw(Box::new(ctx))
+    })
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
-pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
-    if uc.is_null() || ctx.is_null() {
+pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: &HookContext) {
+    if uc.is_null() {
         return;
     }
 
@@ -401,7 +399,6 @@ pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
 
     let ss = unsafe { &mut (*mcontext).__ss };
     let ns = unsafe { &mut (*mcontext).__ns };
-    let ctx = unsafe { &*ctx };
     let regs = unsafe { ctx.regs.x };
 
     ss.__x.copy_from_slice(&regs[..29]);
@@ -424,9 +421,18 @@ pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
-pub unsafe fn free_ctx(ctx: *mut HookContext) {
-    if !ctx.is_null() {
-        let _ = unsafe { Box::from_raw(ctx) };
+pub unsafe fn rewrite_signal_pc(uc: *mut libc::ucontext_t, pc: u64) {
+    if uc.is_null() {
+        return;
+    }
+
+    let mcontext = unsafe { (*uc).uc_mcontext };
+    if mcontext.is_null() {
+        return;
+    }
+
+    unsafe {
+        (*mcontext).__ss.__pc = pc;
     }
 }
 
@@ -543,7 +549,7 @@ unsafe fn linux_aarch64_fpsimd_context(
     any(target_os = "linux", target_os = "android"),
     target_arch = "aarch64"
 ))]
-pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
+pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> Option<HookContext> {
     let mcontext = unsafe { linux_aarch64_mcontext(uc) };
     let mut fpregs = zeroed_fpregs();
 
@@ -556,7 +562,7 @@ pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
         fpregs.fpcr = fpsimd.fpcr;
     }
 
-    let ctx = HookContext {
+    Some(HookContext {
         regs: XRegisters {
             x: unsafe { (*mcontext).regs },
         },
@@ -565,22 +571,15 @@ pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
         cpsr: unsafe { (*mcontext).pstate as u32 },
         pad: 0,
         fpregs,
-    };
-
-    Box::into_raw(Box::new(ctx))
+    })
 }
 
 #[cfg(all(
     any(target_os = "linux", target_os = "android"),
     target_arch = "aarch64"
 ))]
-pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
-    if ctx.is_null() {
-        return;
-    }
-
+pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: &HookContext) {
     let mcontext = unsafe { linux_aarch64_mcontext(uc) };
-    let ctx = unsafe { &*ctx };
 
     unsafe {
         (*mcontext).regs = ctx.regs.x;
@@ -601,9 +600,18 @@ pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
     any(target_os = "linux", target_os = "android"),
     target_arch = "aarch64"
 ))]
-pub unsafe fn free_ctx(ctx: *mut HookContext) {
-    if !ctx.is_null() {
-        let _ = unsafe { Box::from_raw(ctx) };
+pub unsafe fn rewrite_signal_pc(uc: *mut libc::ucontext_t, pc: u64) {
+    if uc.is_null() {
+        return;
+    }
+
+    let mcontext = unsafe { linux_aarch64_mcontext(uc) };
+    if mcontext.is_null() {
+        return;
+    }
+
+    unsafe {
+        (*mcontext).pc = pc;
     }
 }
 
@@ -697,16 +705,16 @@ fn write_darwin_x86_fpregs(fs: *mut DarwinX86FloatState64, fpregs: &FpRegisters)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
+pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> Option<HookContext> {
     let mcontext = unsafe { (*uc).uc_mcontext };
     if mcontext.is_null() {
-        return std::ptr::null_mut();
+        return None;
     }
 
     let ss = unsafe { &(*mcontext).__ss };
     let fs = unsafe { std::ptr::addr_of!((*mcontext).__fs).cast::<DarwinX86FloatState64>() };
 
-    let ctx = HookContext {
+    Some(HookContext {
         r8: ss.__r8,
         r9: ss.__r9,
         r10: ss.__r10,
@@ -726,21 +734,18 @@ pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
         rip: ss.__rip,
         eflags: ss.__rflags,
         fpregs: read_darwin_x86_fpregs(fs),
-    };
-
-    Box::into_raw(Box::new(ctx))
+    })
 }
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
+pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: &HookContext) {
     let mcontext = unsafe { (*uc).uc_mcontext };
-    if mcontext.is_null() || ctx.is_null() {
+    if mcontext.is_null() {
         return;
     }
 
     let ss = unsafe { &mut (*mcontext).__ss };
     let fs = unsafe { std::ptr::addr_of_mut!((*mcontext).__fs).cast::<DarwinX86FloatState64>() };
-    let ctx = unsafe { &*ctx };
 
     ss.__r8 = ctx.r8;
     ss.__r9 = ctx.r9;
@@ -947,11 +952,11 @@ fn write_linux_x86_fpregs(fpstate: *mut LinuxX86FpState, fpregs: &FpRegisters) {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
+pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> Option<HookContext> {
     let mcontext = unsafe { linux_x86_mcontext(uc) };
     let gregs = unsafe { &(*mcontext).gregs };
 
-    let ctx = HookContext {
+    Some(HookContext {
         r8: gregs[libc::REG_R8 as usize] as u64,
         r9: gregs[libc::REG_R9 as usize] as u64,
         r10: gregs[libc::REG_R10 as usize] as u64,
@@ -971,20 +976,13 @@ pub unsafe fn remap_ctx(uc: *mut libc::ucontext_t) -> *mut HookContext {
         rip: gregs[libc::REG_RIP as usize] as u64,
         eflags: gregs[libc::REG_EFL as usize] as u64,
         fpregs: read_linux_x86_fpregs(unsafe { (*mcontext).fpregs }),
-    };
-
-    Box::into_raw(Box::new(ctx))
+    })
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
-    if ctx.is_null() {
-        return;
-    }
-
+pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: &HookContext) {
     let mcontext = unsafe { linux_x86_mcontext(uc) };
     let gregs = unsafe { &mut (*mcontext).gregs };
-    let ctx = unsafe { &*ctx };
 
     gregs[libc::REG_R8 as usize] = ctx.r8 as libc::greg_t;
     gregs[libc::REG_R9 as usize] = ctx.r9 as libc::greg_t;
@@ -1006,13 +1004,6 @@ pub unsafe fn write_back_ctx(uc: *mut libc::ucontext_t, ctx: *mut HookContext) {
     gregs[libc::REG_EFL as usize] = ctx.eflags as libc::greg_t;
 
     write_linux_x86_fpregs(unsafe { (*mcontext).fpregs }, &ctx.fpregs);
-}
-
-#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
-pub unsafe fn free_ctx(ctx: *mut HookContext) {
-    if !ctx.is_null() {
-        let _ = unsafe { Box::from_raw(ctx) };
-    }
 }
 
 #[cfg(all(

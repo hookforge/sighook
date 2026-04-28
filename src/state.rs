@@ -4,10 +4,14 @@ use crate::error::SigHookError;
 #[cfg(target_arch = "aarch64")]
 use crate::replay::ReplayPlan;
 use crate::trampoline;
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::Mutex;
 
 #[derive(Copy, Clone)]
 pub(crate) struct InstrumentSlot {
     pub used: bool,
+    pub armed: bool,
     pub address: u64,
     pub original_bytes: [u8; 16],
     pub original_len: u8,
@@ -27,6 +31,7 @@ pub(crate) struct InstrumentSlot {
 impl InstrumentSlot {
     pub const EMPTY: Self = Self {
         used: false,
+        armed: false,
         address: 0,
         original_bytes: [0u8; 16],
         original_len: 0,
@@ -41,9 +46,13 @@ impl InstrumentSlot {
     };
 }
 
-pub(crate) static mut HANDLERS_INSTALLED: bool = false;
-pub(crate) static mut SLOTS: [InstrumentSlot; MAX_INSTRUMENTS] =
-    [InstrumentSlot::EMPTY; MAX_INSTRUMENTS];
+type InstrumentSlotArray = [InstrumentSlot; MAX_INSTRUMENTS];
+
+const EMPTY_INSTRUMENT_SLOTS: InstrumentSlotArray = [InstrumentSlot::EMPTY; MAX_INSTRUMENTS];
+
+pub(crate) static HANDLERS_INSTALLED: AtomicBool = AtomicBool::new(false);
+static SLOT_SNAPSHOT: AtomicPtr<InstrumentSlotArray> = AtomicPtr::new(ptr::null_mut());
+static SLOT_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Copy, Clone)]
 pub(crate) struct InlinePatchSlot {
@@ -62,8 +71,9 @@ impl InlinePatchSlot {
     };
 }
 
-pub(crate) static mut INLINE_PATCH_SLOTS: [InlinePatchSlot; MAX_INSTRUMENTS] =
-    [InlinePatchSlot::EMPTY; MAX_INSTRUMENTS];
+type InlinePatchSlotArray = [InlinePatchSlot; MAX_INSTRUMENTS];
+static INLINE_PATCH_SLOTS: Mutex<InlinePatchSlotArray> =
+    Mutex::new([InlinePatchSlot::EMPTY; MAX_INSTRUMENTS]);
 
 #[derive(Copy, Clone)]
 pub(crate) struct OriginalOpcodeSlot {
@@ -80,15 +90,51 @@ impl OriginalOpcodeSlot {
     };
 }
 
-pub(crate) static mut ORIGINAL_OPCODE_SLOTS: [OriginalOpcodeSlot; MAX_INSTRUMENTS] =
-    [OriginalOpcodeSlot::EMPTY; MAX_INSTRUMENTS];
-pub(crate) static mut ORIGINAL_OPCODE_REPLACE_INDEX: usize = 0;
+#[derive(Copy, Clone)]
+struct OriginalOpcodeState {
+    slots: [OriginalOpcodeSlot; MAX_INSTRUMENTS],
+    replace_index: usize,
+}
 
-pub(crate) unsafe fn find_slot_index(address: u64) -> Option<usize> {
+impl OriginalOpcodeState {
+    const EMPTY: Self = Self {
+        slots: [OriginalOpcodeSlot::EMPTY; MAX_INSTRUMENTS],
+        replace_index: 0,
+    };
+}
+
+static ORIGINAL_OPCODE_STATE: Mutex<OriginalOpcodeState> = Mutex::new(OriginalOpcodeState::EMPTY);
+
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn current_slot_snapshot() -> &'static InstrumentSlotArray {
+    let ptr = SLOT_SNAPSHOT.load(Ordering::Acquire);
+    if ptr.is_null() {
+        &EMPTY_INSTRUMENT_SLOTS
+    } else {
+        unsafe { &*ptr }
+    }
+}
+
+fn publish_slot_snapshot(slots: InstrumentSlotArray) {
+    let ptr = Box::into_raw(Box::new(slots));
+    let _ = SLOT_SNAPSHOT.swap(ptr, Ordering::AcqRel);
+}
+
+fn find_slot_index_in(
+    slots: &InstrumentSlotArray,
+    address: u64,
+    include_disarmed: bool,
+) -> Option<usize> {
     let mut index = 0;
     while index < MAX_INSTRUMENTS {
-        let slot = unsafe { SLOTS[index] };
-        if slot.used && slot.address == address {
+        let slot = slots[index];
+        if slot.used && slot.address == address && (include_disarmed || slot.armed) {
             return Some(index);
         }
         index += 1;
@@ -97,16 +143,35 @@ pub(crate) unsafe fn find_slot_index(address: u64) -> Option<usize> {
 }
 
 pub(crate) unsafe fn slot_by_address(address: u64) -> Option<InstrumentSlot> {
-    let index = unsafe { find_slot_index(address) }?;
-    Some(unsafe { SLOTS[index] })
+    let slots = current_slot_snapshot();
+    let index = find_slot_index_in(slots, address, false)?;
+    Some(slots[index])
+}
+
+pub(crate) unsafe fn trap_slot_by_address(address: u64) -> Option<InstrumentSlot> {
+    let slots = current_slot_snapshot();
+    let index = find_slot_index_in(slots, address, true)?;
+    Some(slots[index])
 }
 
 pub(crate) unsafe fn remove_slot(address: u64) -> Option<InstrumentSlot> {
-    let index = unsafe { find_slot_index(address) }?;
-    let slot = unsafe { SLOTS[index] };
-    unsafe {
-        SLOTS[index] = InstrumentSlot::EMPTY;
-    }
+    let _guard = lock_or_recover(&SLOT_WRITE_LOCK);
+    let mut slots = *current_slot_snapshot();
+    let index = find_slot_index_in(&slots, address, false)?;
+    let slot = slots[index];
+    slots[index].armed = false;
+    slots[index].runtime_patch_installed = false;
+    publish_slot_snapshot(slots);
+    Some(slot)
+}
+
+pub(crate) unsafe fn drop_slot(address: u64) -> Option<InstrumentSlot> {
+    let _guard = lock_or_recover(&SLOT_WRITE_LOCK);
+    let mut slots = *current_slot_snapshot();
+    let index = find_slot_index_in(&slots, address, true)?;
+    let slot = slots[index];
+    slots[index] = InstrumentSlot::EMPTY;
+    publish_slot_snapshot(slots);
     Some(slot)
 }
 
@@ -128,9 +193,14 @@ pub(crate) unsafe fn register_slot(
     let mut stored_bytes = [0u8; 16];
     stored_bytes[..original_bytes.len()].copy_from_slice(original_bytes);
 
-    if let Some(index) = unsafe { find_slot_index(address) } {
-        let mut slot = unsafe { SLOTS[index] };
+    let _guard = lock_or_recover(&SLOT_WRITE_LOCK);
+    let mut slots = *current_slot_snapshot();
 
+    if let Some(index) = find_slot_index_in(&slots, address, true) {
+        let mut slot = slots[index];
+
+        slot.used = true;
+        slot.armed = true;
         slot.callback = Some(callback);
         #[cfg(target_arch = "aarch64")]
         {
@@ -140,7 +210,11 @@ pub(crate) unsafe fn register_slot(
         slot.return_to_caller = return_to_caller;
         slot.runtime_patch_installed |= runtime_patch_installed;
 
-        if slot.original_len == 0 {
+        if slot.original_len == 0
+            || slot.original_len as usize != original_bytes.len()
+            || slot.step_len != step_len
+            || slot.original_bytes[..original_bytes.len()] != stored_bytes[..original_bytes.len()]
+        {
             slot.original_len = original_bytes.len() as u8;
             slot.original_bytes = stored_bytes;
             slot.step_len = step_len;
@@ -161,16 +235,15 @@ pub(crate) unsafe fn register_slot(
             )?;
         }
 
-        unsafe {
-            SLOTS[index] = slot;
-        }
+        slots[index] = slot;
+        publish_slot_snapshot(slots);
 
         return Ok(());
     }
 
     let mut index = 0;
     while index < MAX_INSTRUMENTS {
-        if !(unsafe { SLOTS[index].used }) {
+        if !slots[index].used {
             #[cfg(target_arch = "aarch64")]
             // The same rule applies for brand new slots: allocate trampoline memory
             // only when the replay planner could not provide a direct emulation path.
@@ -184,22 +257,22 @@ pub(crate) unsafe fn register_slot(
                 0
             };
 
-            unsafe {
-                SLOTS[index] = InstrumentSlot {
-                    used: true,
-                    address,
-                    original_bytes: stored_bytes,
-                    original_len: original_bytes.len() as u8,
-                    step_len,
-                    callback: Some(callback),
-                    execute_original,
-                    return_to_caller,
-                    runtime_patch_installed,
-                    trampoline_pc,
-                    #[cfg(target_arch = "aarch64")]
-                    replay_plan,
-                };
-            }
+            slots[index] = InstrumentSlot {
+                used: true,
+                armed: true,
+                address,
+                original_bytes: stored_bytes,
+                original_len: original_bytes.len() as u8,
+                step_len,
+                callback: Some(callback),
+                execute_original,
+                return_to_caller,
+                runtime_patch_installed,
+                trampoline_pc,
+                #[cfg(target_arch = "aarch64")]
+                replay_plan,
+            };
+            publish_slot_snapshot(slots);
             return Ok(());
         }
         index += 1;
@@ -224,10 +297,10 @@ pub(crate) unsafe fn original_bytes_by_address(address: u64) -> Option<([u8; 16]
     Some((slot.original_bytes, slot.original_len))
 }
 
-unsafe fn find_inline_patch_slot_index(address: u64) -> Option<usize> {
+fn find_inline_patch_slot_index_in(slots: &InlinePatchSlotArray, address: u64) -> Option<usize> {
     let mut index = 0;
     while index < MAX_INSTRUMENTS {
-        let slot = unsafe { INLINE_PATCH_SLOTS[index] };
+        let slot = slots[index];
         if slot.used && slot.address == address {
             return Some(index);
         }
@@ -244,7 +317,9 @@ pub(crate) unsafe fn cache_inline_patch(
         return Err(SigHookError::InvalidAddress);
     }
 
-    if unsafe { find_inline_patch_slot_index(address) }.is_some() {
+    let mut slots = lock_or_recover(&INLINE_PATCH_SLOTS);
+
+    if find_inline_patch_slot_index_in(&slots, address).is_some() {
         return Ok(false);
     }
 
@@ -253,15 +328,13 @@ pub(crate) unsafe fn cache_inline_patch(
 
     let mut index = 0;
     while index < MAX_INSTRUMENTS {
-        if !(unsafe { INLINE_PATCH_SLOTS[index].used }) {
-            unsafe {
-                INLINE_PATCH_SLOTS[index] = InlinePatchSlot {
-                    used: true,
-                    address,
-                    original_bytes: stored_bytes,
-                    original_len: original_bytes.len() as u8,
-                };
-            }
+        if !slots[index].used {
+            slots[index] = InlinePatchSlot {
+                used: true,
+                address,
+                original_bytes: stored_bytes,
+                original_len: original_bytes.len() as u8,
+            };
             return Ok(true);
         }
         index += 1;
@@ -271,28 +344,30 @@ pub(crate) unsafe fn cache_inline_patch(
 }
 
 pub(crate) unsafe fn inline_patch_by_address(address: u64) -> Option<([u8; 16], u8)> {
-    let index = unsafe { find_inline_patch_slot_index(address) }?;
-    let slot = unsafe { INLINE_PATCH_SLOTS[index] };
+    let slots = lock_or_recover(&INLINE_PATCH_SLOTS);
+    let index = find_inline_patch_slot_index_in(&slots, address)?;
+    let slot = slots[index];
     Some((slot.original_bytes, slot.original_len))
 }
 
 pub(crate) unsafe fn remove_inline_patch(address: u64) -> bool {
-    let index = match unsafe { find_inline_patch_slot_index(address) } {
+    let mut slots = lock_or_recover(&INLINE_PATCH_SLOTS);
+    let index = match find_inline_patch_slot_index_in(&slots, address) {
         Some(index) => index,
         None => return false,
     };
 
-    unsafe {
-        INLINE_PATCH_SLOTS[index] = InlinePatchSlot::EMPTY;
-    }
-
+    slots[index] = InlinePatchSlot::EMPTY;
     true
 }
 
-unsafe fn find_original_opcode_slot_index(address: u64) -> Option<usize> {
+fn find_original_opcode_slot_index(
+    slots: &[OriginalOpcodeSlot; MAX_INSTRUMENTS],
+    address: u64,
+) -> Option<usize> {
     let mut index = 0;
     while index < MAX_INSTRUMENTS {
-        let slot = unsafe { ORIGINAL_OPCODE_SLOTS[index] };
+        let slot = slots[index];
         if slot.used && slot.address == address {
             return Some(index);
         }
@@ -303,54 +378,49 @@ unsafe fn find_original_opcode_slot_index(address: u64) -> Option<usize> {
 }
 
 pub(crate) unsafe fn cache_original_opcode(address: u64, opcode: u32) {
-    if let Some(index) = unsafe { find_original_opcode_slot_index(address) } {
-        unsafe {
-            ORIGINAL_OPCODE_SLOTS[index].opcode = opcode;
-        }
+    let mut state = lock_or_recover(&ORIGINAL_OPCODE_STATE);
+
+    if let Some(index) = find_original_opcode_slot_index(&state.slots, address) {
+        state.slots[index].opcode = opcode;
         return;
     }
 
     let mut index = 0;
     while index < MAX_INSTRUMENTS {
-        if !(unsafe { ORIGINAL_OPCODE_SLOTS[index].used }) {
-            unsafe {
-                ORIGINAL_OPCODE_SLOTS[index] = OriginalOpcodeSlot {
-                    used: true,
-                    address,
-                    opcode,
-                };
-            }
+        if !state.slots[index].used {
+            state.slots[index] = OriginalOpcodeSlot {
+                used: true,
+                address,
+                opcode,
+            };
             return;
         }
 
         index += 1;
     }
 
-    let replace_index = unsafe { ORIGINAL_OPCODE_REPLACE_INDEX % MAX_INSTRUMENTS };
-    unsafe {
-        ORIGINAL_OPCODE_SLOTS[replace_index] = OriginalOpcodeSlot {
-            used: true,
-            address,
-            opcode,
-        };
-        ORIGINAL_OPCODE_REPLACE_INDEX = (replace_index + 1) % MAX_INSTRUMENTS;
-    }
+    let replace_index = state.replace_index % MAX_INSTRUMENTS;
+    state.slots[replace_index] = OriginalOpcodeSlot {
+        used: true,
+        address,
+        opcode,
+    };
+    state.replace_index = (replace_index + 1) % MAX_INSTRUMENTS;
 }
 
 pub(crate) unsafe fn cached_original_opcode_by_address(address: u64) -> Option<u32> {
-    let index = unsafe { find_original_opcode_slot_index(address) }?;
-    Some(unsafe { ORIGINAL_OPCODE_SLOTS[index].opcode })
+    let state = lock_or_recover(&ORIGINAL_OPCODE_STATE);
+    let index = find_original_opcode_slot_index(&state.slots, address)?;
+    Some(state.slots[index].opcode)
 }
 
 pub(crate) unsafe fn remove_cached_original_opcode(address: u64) -> bool {
-    let index = match unsafe { find_original_opcode_slot_index(address) } {
+    let mut state = lock_or_recover(&ORIGINAL_OPCODE_STATE);
+    let index = match find_original_opcode_slot_index(&state.slots, address) {
         Some(index) => index,
         None => return false,
     };
 
-    unsafe {
-        ORIGINAL_OPCODE_SLOTS[index] = OriginalOpcodeSlot::EMPTY;
-    }
-
+    state.slots[index] = OriginalOpcodeSlot::EMPTY;
     true
 }
