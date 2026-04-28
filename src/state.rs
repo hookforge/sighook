@@ -5,8 +5,8 @@ use crate::error::SigHookError;
 use crate::replay::ReplayPlan;
 use crate::trampoline;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 #[derive(Copy, Clone)]
 pub(crate) struct InstrumentSlot {

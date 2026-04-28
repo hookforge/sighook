@@ -21,8 +21,7 @@ static INIT_ARRAY: extern "C" fn() = init;
 extern "C" fn init() {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        let patchpoint =
-            libc::dlsym(libc::RTLD_DEFAULT, c"calc_prepatched_patchpoint".as_ptr());
+        let patchpoint = libc::dlsym(libc::RTLD_DEFAULT, c"calc_prepatched_patchpoint".as_ptr());
         if patchpoint.is_null() {
             return;
         }

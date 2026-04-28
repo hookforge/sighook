@@ -316,7 +316,8 @@ pub(crate) fn apply_replay_plan(
             rt,
             literal_address,
         } => {
-            let value = with_fault_pc_remap(address, || unsafe { read_u128_bytes(literal_address) });
+            let value =
+                with_fault_pc_remap(address, || unsafe { read_u128_bytes(literal_address) });
             write_q(ctx, rt, value);
             ctx.pc = next_pc;
             true
@@ -735,7 +736,8 @@ fn write_w(ctx: &mut HookContext, reg: u8, value: u32) {
 #[inline]
 fn write_nzcv(ctx: &mut HookContext, n: bool, z: bool, c: bool, v: bool) {
     let mut cpsr = ctx.cpsr & !(0xFu32 << 28);
-    cpsr |= (u32::from(n) << 31) | (u32::from(z) << 30) | (u32::from(c) << 29) | (u32::from(v) << 28);
+    cpsr |=
+        (u32::from(n) << 31) | (u32::from(z) << 30) | (u32::from(c) << 29) | (u32::from(v) << 28);
     ctx.cpsr = cpsr;
 }
 

@@ -523,9 +523,7 @@ fn instrument_internal(
             runtime_patch_installed,
         );
 
-        if let Err(err) = register_result {
-            return Err(err);
-        }
+        register_result?;
 
         if runtime_patch_installed {
             #[cfg(target_arch = "aarch64")]
