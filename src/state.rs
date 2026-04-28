@@ -5,8 +5,8 @@ use crate::error::SigHookError;
 use crate::replay::ReplayPlan;
 use crate::trampoline;
 use std::ptr;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 #[derive(Copy, Clone)]
 pub(crate) struct InstrumentSlot {
@@ -50,9 +50,10 @@ type InstrumentSlotArray = [InstrumentSlot; MAX_INSTRUMENTS];
 
 const EMPTY_INSTRUMENT_SLOTS: InstrumentSlotArray = [InstrumentSlot::EMPTY; MAX_INSTRUMENTS];
 
-pub(crate) static HANDLERS_INSTALLED: AtomicBool = AtomicBool::new(false);
 static SLOT_SNAPSHOT: AtomicPtr<InstrumentSlotArray> = AtomicPtr::new(ptr::null_mut());
 static SLOT_WRITE_LOCK: Mutex<()> = Mutex::new(());
+static SLOT_SNAPSHOT_READERS: AtomicUsize = AtomicUsize::new(0);
+static RETIRED_SLOT_SNAPSHOTS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 #[derive(Copy, Clone)]
 pub(crate) struct InlinePatchSlot {
@@ -112,18 +113,73 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     }
 }
 
-fn current_slot_snapshot() -> &'static InstrumentSlotArray {
+struct SlotSnapshotReadGuard;
+
+impl SlotSnapshotReadGuard {
+    fn enter() -> Self {
+        SLOT_SNAPSHOT_READERS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for SlotSnapshotReadGuard {
+    fn drop(&mut self) {
+        SLOT_SNAPSHOT_READERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn with_current_slot_snapshot<T>(f: impl FnOnce(&InstrumentSlotArray) -> T) -> T {
+    let _guard = SlotSnapshotReadGuard::enter();
     let ptr = SLOT_SNAPSHOT.load(Ordering::Acquire);
-    if ptr.is_null() {
+    let slots = if ptr.is_null() {
         &EMPTY_INSTRUMENT_SLOTS
     } else {
         unsafe { &*ptr }
-    }
+    };
+    f(slots)
+}
+
+fn current_slot_snapshot_copy() -> InstrumentSlotArray {
+    with_current_slot_snapshot(|slots| *slots)
 }
 
 fn publish_slot_snapshot(slots: InstrumentSlotArray) {
     let ptr = Box::into_raw(Box::new(slots));
-    let _ = SLOT_SNAPSHOT.swap(ptr, Ordering::AcqRel);
+    let old = SLOT_SNAPSHOT.swap(ptr, Ordering::AcqRel);
+    retire_slot_snapshot(old as usize);
+}
+
+fn publish_prepared_slot_snapshot(slots: Box<InstrumentSlotArray>) -> usize {
+    let ptr = Box::into_raw(slots);
+    SLOT_SNAPSHOT.swap(ptr, Ordering::AcqRel) as usize
+}
+
+pub(crate) fn retire_slot_snapshot(ptr: usize) {
+    if ptr == 0 {
+        return;
+    }
+
+    let mut retired = lock_or_recover(&RETIRED_SLOT_SNAPSHOTS);
+    retired.push(ptr);
+    drop(retired);
+    reclaim_retired_slot_snapshots();
+}
+
+pub(crate) fn reclaim_retired_slot_snapshots() {
+    if SLOT_SNAPSHOT_READERS.load(Ordering::Acquire) != 0 {
+        return;
+    }
+
+    let mut retired = lock_or_recover(&RETIRED_SLOT_SNAPSHOTS);
+    if SLOT_SNAPSHOT_READERS.load(Ordering::Acquire) != 0 {
+        return;
+    }
+
+    for ptr in retired.drain(..) {
+        unsafe {
+            drop(Box::from_raw(ptr as *mut InstrumentSlotArray));
+        }
+    }
 }
 
 fn find_slot_index_in(
@@ -143,36 +199,71 @@ fn find_slot_index_in(
 }
 
 pub(crate) unsafe fn slot_by_address(address: u64) -> Option<InstrumentSlot> {
-    let slots = current_slot_snapshot();
-    let index = find_slot_index_in(slots, address, false)?;
-    Some(slots[index])
+    with_current_slot_snapshot(|slots| {
+        let index = find_slot_index_in(slots, address, false)?;
+        Some(slots[index])
+    })
 }
 
 pub(crate) unsafe fn trap_slot_by_address(address: u64) -> Option<InstrumentSlot> {
-    let slots = current_slot_snapshot();
-    let index = find_slot_index_in(slots, address, true)?;
-    Some(slots[index])
+    with_current_slot_snapshot(|slots| {
+        let index = find_slot_index_in(slots, address, false)?;
+        Some(slots[index])
+    })
 }
 
-pub(crate) unsafe fn remove_slot(address: u64) -> Option<InstrumentSlot> {
-    let _guard = lock_or_recover(&SLOT_WRITE_LOCK);
-    let mut slots = *current_slot_snapshot();
-    let index = find_slot_index_in(&slots, address, false)?;
-    let slot = slots[index];
-    slots[index].armed = false;
-    slots[index].runtime_patch_installed = false;
-    publish_slot_snapshot(slots);
-    Some(slot)
+pub(crate) unsafe fn retired_slot_by_address(address: u64) -> Option<InstrumentSlot> {
+    with_current_slot_snapshot(|slots| {
+        let index = find_slot_index_in(slots, address, true)?;
+        let slot = slots[index];
+        if slot.armed { None } else { Some(slot) }
+    })
 }
 
 pub(crate) unsafe fn drop_slot(address: u64) -> Option<InstrumentSlot> {
     let _guard = lock_or_recover(&SLOT_WRITE_LOCK);
-    let mut slots = *current_slot_snapshot();
-    let index = find_slot_index_in(&slots, address, true)?;
+    let mut slots = current_slot_snapshot_copy();
+    let index = find_slot_index_in(&slots, address, false)?;
     let slot = slots[index];
     slots[index] = InstrumentSlot::EMPTY;
     publish_slot_snapshot(slots);
     Some(slot)
+}
+
+pub(crate) struct PreparedSlotRemoval {
+    slot: InstrumentSlot,
+    slots: Box<InstrumentSlotArray>,
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl PreparedSlotRemoval {
+    pub(crate) fn slot(&self) -> InstrumentSlot {
+        self.slot
+    }
+
+    pub(crate) fn commit(self) -> usize {
+        let Self {
+            slots,
+            _guard,
+            slot: _,
+        } = self;
+        publish_prepared_slot_snapshot(slots)
+    }
+}
+
+pub(crate) unsafe fn prepare_remove_slot(address: u64) -> Option<PreparedSlotRemoval> {
+    let guard = lock_or_recover(&SLOT_WRITE_LOCK);
+    let mut slots = current_slot_snapshot_copy();
+    let index = find_slot_index_in(&slots, address, false)?;
+    let slot = slots[index];
+    slots[index].armed = false;
+    slots[index].runtime_patch_installed = false;
+
+    Some(PreparedSlotRemoval {
+        slot,
+        slots: Box::new(slots),
+        _guard: guard,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -194,7 +285,7 @@ pub(crate) unsafe fn register_slot(
     stored_bytes[..original_bytes.len()].copy_from_slice(original_bytes);
 
     let _guard = lock_or_recover(&SLOT_WRITE_LOCK);
-    let mut slots = *current_slot_snapshot();
+    let mut slots = current_slot_snapshot_copy();
 
     if let Some(index) = find_slot_index_in(&slots, address, true) {
         let mut slot = slots[index];
@@ -247,6 +338,41 @@ pub(crate) unsafe fn register_slot(
             #[cfg(target_arch = "aarch64")]
             // The same rule applies for brand new slots: allocate trampoline memory
             // only when the replay planner could not provide a direct emulation path.
+            let needs_trampoline = replay_plan.requires_trampoline();
+            #[cfg(not(target_arch = "aarch64"))]
+            let needs_trampoline = execute_original;
+
+            let trampoline_pc = if needs_trampoline {
+                trampoline::create_original_trampoline(address, original_bytes, step_len)?
+            } else {
+                0
+            };
+
+            slots[index] = InstrumentSlot {
+                used: true,
+                armed: true,
+                address,
+                original_bytes: stored_bytes,
+                original_len: original_bytes.len() as u8,
+                step_len,
+                callback: Some(callback),
+                execute_original,
+                return_to_caller,
+                runtime_patch_installed,
+                trampoline_pc,
+                #[cfg(target_arch = "aarch64")]
+                replay_plan,
+            };
+            publish_slot_snapshot(slots);
+            return Ok(());
+        }
+        index += 1;
+    }
+
+    let mut index = 0;
+    while index < MAX_INSTRUMENTS {
+        if !slots[index].armed {
+            #[cfg(target_arch = "aarch64")]
             let needs_trampoline = replay_plan.requires_trampoline();
             #[cfg(not(target_arch = "aarch64"))]
             let needs_trampoline = execute_original;

@@ -1,6 +1,6 @@
 use crate::context::InstrumentCallback;
 use crate::error::SigHookError;
-use crate::memory::last_errno;
+use crate::platform::last_errno;
 #[cfg(target_arch = "aarch64")]
 use crate::replay::ReplayPlan;
 use crate::state;
@@ -9,6 +9,7 @@ use core::mem::MaybeUninit;
 use libc::{c_int, c_void};
 use std::mem::zeroed;
 use std::ptr::null_mut;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -53,6 +54,7 @@ static PREV_SIGSEGV_ACTION: PreviousActionSlot = PreviousActionSlot::new();
 #[cfg(target_arch = "aarch64")]
 static PREV_SIGBUS_ACTION: PreviousActionSlot = PreviousActionSlot::new();
 static ACTIVE_TRAP_HANDLERS: AtomicUsize = AtomicUsize::new(0);
+static HANDLERS_INSTALLED: OnceLock<Result<(), SigHookError>> = OnceLock::new();
 
 #[inline]
 fn current_trap_handler_raw() -> libc::sighandler_t {
@@ -172,13 +174,20 @@ pub(crate) fn wait_for_trap_handlers_quiescent() -> Result<(), SigHookError> {
         }
         std::thread::yield_now();
     }
+    state::reclaim_retired_slot_snapshots();
     Ok(())
+}
+
+pub(crate) fn trap_handlers_active() -> bool {
+    ACTIVE_TRAP_HANDLERS.load(Ordering::Acquire) != 0
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), target_arch = "aarch64"))]
 extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c_void) {
+    use crate::arch::{is_brk, read_u32};
     use crate::context::{remap_ctx, write_back_ctx};
-    use crate::memory::{is_brk, read_u32};
+
+    let _guard = ActiveTrapGuard::enter();
 
     if info.is_null() || uctx.is_null() {
         unsafe {
@@ -205,17 +214,29 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
 
     let trap_address = ctx.pc;
     let ctx_ptr: *mut crate::context::HookContext = &mut ctx;
-    let managed_trap = unsafe { state::trap_slot_by_address(trap_address).is_some() };
+    let slot = unsafe { state::trap_slot_by_address(trap_address) };
+    let managed_trap = slot.is_some();
+    let opcode = if managed_trap {
+        0
+    } else {
+        read_u32(trap_address)
+    };
+    let retired_slot = if !managed_trap && signum == libc::SIGTRAP && !is_brk(opcode) {
+        // A peer can take the old BRK exception just before unhook restores bytes.
+        // If the restored instruction is not a trap, this is that delayed exception.
+        unsafe { state::retired_slot_by_address(trap_address) }
+    } else {
+        None
+    };
 
-    if !managed_trap && !is_brk(read_u32(trap_address)) {
+    if !managed_trap && retired_slot.is_none() && !is_brk(opcode) {
         unsafe {
             chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
-    let _guard = ActiveTrapGuard::enter();
-    if !handle_trap_aarch64(trap_address, ctx_ptr) {
+    if !handle_trap_aarch64(trap_address, ctx_ptr, slot.or(retired_slot)) {
         unsafe {
             chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
@@ -232,8 +253,10 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
     target_arch = "aarch64"
 ))]
 extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c_void) {
+    use crate::arch::{is_brk, read_u32};
     use crate::context::{remap_ctx, write_back_ctx};
-    use crate::memory::{is_brk, read_u32};
+
+    let _guard = ActiveTrapGuard::enter();
 
     if info.is_null() || uctx.is_null() {
         unsafe {
@@ -251,17 +274,29 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
     };
     let trap_address = ctx.pc;
     let ctx_ptr: *mut crate::context::HookContext = &mut ctx;
-    let managed_trap = unsafe { state::trap_slot_by_address(trap_address).is_some() };
+    let slot = unsafe { state::trap_slot_by_address(trap_address) };
+    let managed_trap = slot.is_some();
+    let opcode = if managed_trap {
+        0
+    } else {
+        read_u32(trap_address)
+    };
+    let retired_slot = if !managed_trap && signum == libc::SIGTRAP && !is_brk(opcode) {
+        // A peer can take the old BRK exception just before unhook restores bytes.
+        // If the restored instruction is not a trap, this is that delayed exception.
+        unsafe { state::retired_slot_by_address(trap_address) }
+    } else {
+        None
+    };
 
-    if !managed_trap && !is_brk(read_u32(trap_address)) {
+    if !managed_trap && retired_slot.is_none() && !is_brk(opcode) {
         unsafe {
             chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
-    let _guard = ActiveTrapGuard::enter();
-    if !handle_trap_aarch64(trap_address, ctx_ptr) {
+    if !handle_trap_aarch64(trap_address, ctx_ptr, slot.or(retired_slot)) {
         unsafe {
             chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
@@ -275,8 +310,10 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut c_void) {
+    use crate::arch::{is_int3, read_u8};
     use crate::context::{remap_ctx, write_back_ctx};
-    use crate::memory::{is_int3, read_u8};
+
+    let _guard = ActiveTrapGuard::enter();
 
     if info.is_null() || uctx.is_null() {
         unsafe {
@@ -302,23 +339,40 @@ extern "C" fn trap_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mut
     }
 
     let trap_address = ctx.rip.wrapping_sub(1);
-    let managed_trap = unsafe { state::trap_slot_by_address(trap_address).is_some() };
-    if !managed_trap && !is_int3(read_u8(trap_address)) {
+    let slot = unsafe { state::trap_slot_by_address(trap_address) };
+    let managed_trap = slot.is_some();
+    let opcode = if managed_trap {
+        0
+    } else {
+        read_u8(trap_address)
+    };
+    let retired_slot = if !managed_trap && !is_int3(opcode) {
+        // A peer can take the old INT3 exception just before unhook restores bytes.
+        // If the restored byte is not INT3, this is that delayed exception.
+        unsafe { state::retired_slot_by_address(trap_address) }
+    } else {
+        None
+    };
+    if !managed_trap && retired_slot.is_none() && !is_int3(opcode) {
         unsafe {
             chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
         return;
     }
 
-    let _guard = ActiveTrapGuard::enter();
-    if !handle_trap_x86_64(trap_address, ctx_ptr, |ctx_ptr, next_pc, trampoline_pc| {
-        let ctx = unsafe { &mut *ctx_ptr };
-        if trampoline_pc != 0 {
-            ctx.rip = trampoline_pc;
-        } else {
-            ctx.rip = next_pc;
-        }
-    }) {
+    if !handle_trap_x86_64(
+        trap_address,
+        ctx_ptr,
+        slot.or(retired_slot),
+        |ctx_ptr, next_pc, trampoline_pc| {
+            let ctx = unsafe { &mut *ctx_ptr };
+            if trampoline_pc != 0 {
+                ctx.rip = trampoline_pc;
+            } else {
+                ctx.rip = next_pc;
+            }
+        },
+    ) {
         unsafe {
             chain_previous(signum, info, uctx, current_trap_handler_raw());
         }
@@ -346,8 +400,11 @@ extern "C" fn fault_handler(signum: c_int, info: *mut libc::siginfo_t, uctx: *mu
 }
 
 #[cfg(target_arch = "aarch64")]
-fn handle_trap_aarch64(address: u64, ctx_ptr: *mut crate::context::HookContext) -> bool {
-    let slot = unsafe { state::trap_slot_by_address(address) };
+fn handle_trap_aarch64(
+    address: u64,
+    ctx_ptr: *mut crate::context::HookContext,
+    slot: Option<state::InstrumentSlot>,
+) -> bool {
     let slot = match slot {
         Some(slot) => slot,
         None => return false,
@@ -399,9 +456,9 @@ fn handle_trap_aarch64(address: u64, ctx_ptr: *mut crate::context::HookContext) 
 fn handle_trap_x86_64(
     address: u64,
     ctx_ptr: *mut crate::context::HookContext,
+    slot: Option<state::InstrumentSlot>,
     set_pc: impl FnOnce(*mut crate::context::HookContext, u64, u64),
 ) -> bool {
-    let slot = unsafe { state::trap_slot_by_address(address) };
     let slot = match slot {
         Some(slot) => slot,
         None => return false,
@@ -469,11 +526,7 @@ fn install_signal(signum: c_int, handler: libc::sighandler_t) -> Result<(), SigH
     Ok(())
 }
 
-pub(crate) unsafe fn ensure_handlers_installed() -> Result<(), SigHookError> {
-    if state::HANDLERS_INSTALLED.load(Ordering::Acquire) {
-        return Ok(());
-    }
-
+unsafe fn install_handlers_once() -> Result<(), SigHookError> {
     install_signal(libc::SIGTRAP, current_trap_handler_raw())?;
 
     #[cfg(target_arch = "aarch64")]
@@ -483,6 +536,12 @@ pub(crate) unsafe fn ensure_handlers_installed() -> Result<(), SigHookError> {
         install_signal(libc::SIGBUS, current_fault_handler_raw())?;
     }
 
-    state::HANDLERS_INSTALLED.store(true, Ordering::Release);
     Ok(())
+}
+
+pub(crate) unsafe fn ensure_handlers_installed() -> Result<(), SigHookError> {
+    match HANDLERS_INSTALLED.get_or_init(|| unsafe { install_handlers_once() }) {
+        Ok(()) => Ok(()),
+        Err(err) => Err(*err),
+    }
 }

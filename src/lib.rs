@@ -14,6 +14,7 @@ compile_error!(
     "sighook only supports Apple aarch64/x86_64 (macOS), Apple aarch64 (iOS), Linux/Android aarch64, and Linux x86_64."
 );
 
+mod arch;
 #[cfg(all(
     feature = "patch_asm",
     any(
@@ -27,8 +28,8 @@ mod asm;
 mod constants;
 mod context;
 mod error;
-mod memory;
-mod patch_sync;
+mod patch;
+mod platform;
 #[cfg(target_arch = "aarch64")]
 mod replay;
 mod signal;
@@ -78,7 +79,7 @@ pub use error::SigHookError;
 pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     {
-        let instruction_len = memory::instruction_width(address)? as usize;
+        let instruction_len = arch::instruction_width(address)? as usize;
         let opcode_bytes = new_opcode.to_le_bytes();
         let patch_len = effective_x86_patch_len(&opcode_bytes);
         if patch_len > instruction_len {
@@ -88,14 +89,14 @@ pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
             });
         }
 
-        let original4 = memory::read_bytes(address, 4)?;
+        let original4 = patch::read_bytes(address, 4)?;
         let mut opcode = [0u8; 4];
         opcode.copy_from_slice(&original4);
         let original_opcode = u32::from_le_bytes(opcode);
 
         let mut patch = vec![0x90u8; instruction_len];
         patch[..patch_len].copy_from_slice(&opcode_bytes[..patch_len]);
-        let _ = memory::patch_bytes_public(address, &patch)?;
+        let _ = patch::patch_bytes_public(address, &patch)?;
         unsafe {
             state::cache_original_opcode(address, original_opcode);
         }
@@ -103,7 +104,7 @@ pub fn patchcode(address: u64, new_opcode: u32) -> Result<u32, SigHookError> {
     }
 
     #[cfg(target_arch = "aarch64")]
-    let original = memory::patch_u32(address, new_opcode)?;
+    let original = patch::patch_u32(address, new_opcode)?;
 
     #[cfg(target_arch = "aarch64")]
     unsafe {
@@ -167,7 +168,7 @@ pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
         use crate::asm::assemble_bytes;
 
         let mut patch = assemble_bytes(address, asm)?;
-        let instruction_len = memory::instruction_width(address)? as usize;
+        let instruction_len = arch::instruction_width(address)? as usize;
         if patch.len() > instruction_len {
             return Err(SigHookError::PatchTooLong {
                 patch_len: patch.len(),
@@ -175,13 +176,13 @@ pub fn patch_asm(address: u64, asm: &str) -> Result<u32, SigHookError> {
             });
         }
 
-        let original4 = memory::read_bytes(address, 4)?;
+        let original4 = patch::read_bytes(address, 4)?;
         let mut opcode = [0u8; 4];
         opcode.copy_from_slice(&original4);
         let original_opcode = u32::from_le_bytes(opcode);
 
         patch.resize(instruction_len, 0x90);
-        let _ = memory::patch_bytes_public(address, &patch)?;
+        let _ = patch::patch_bytes_public(address, &patch)?;
         unsafe {
             state::cache_original_opcode(address, original_opcode);
         }
@@ -296,16 +297,16 @@ fn ensure_prepatched_trap(address: u64) -> Result<(), SigHookError> {
 
     #[cfg(target_arch = "aarch64")]
     {
-        let opcode = memory::read_u32(address);
-        if !memory::is_brk(opcode) {
+        let opcode = arch::read_u32(address);
+        if !arch::is_brk(opcode) {
             return Err(SigHookError::InvalidAddress);
         }
     }
 
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     {
-        let opcode = memory::read_u8(address);
-        if !memory::is_int3(opcode) {
+        let opcode = arch::read_u8(address);
+        if !arch::is_int3(opcode) {
             return Err(SigHookError::InvalidAddress);
         }
     }
@@ -446,20 +447,20 @@ fn instrument_internal(
 
         signal::ensure_handlers_installed()?;
 
-        let step_len: u8 = memory::instruction_width(address)?;
+        let step_len: u8 = arch::instruction_width(address)?;
 
         let (original_bytes, original_opcode, runtime_patch_installed) = match install_mode {
             InstrumentInstallMode::RuntimePatch => {
                 #[cfg(target_arch = "aarch64")]
                 {
-                    let original = memory::read_u32(address);
+                    let original = arch::read_u32(address);
                     (original.to_le_bytes().to_vec(), original, true)
                 }
 
                 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
                 {
-                    let original_bytes = memory::read_bytes(address, step_len as usize)?;
-                    let original4 = memory::read_bytes(address, 4)?;
+                    let original_bytes = patch::read_bytes(address, step_len as usize)?;
+                    let original4 = patch::read_bytes(address, 4)?;
 
                     let mut opcode = [0u8; 4];
                     opcode.copy_from_slice(&original4);
@@ -480,7 +481,7 @@ fn instrument_internal(
                             false,
                         )
                     } else {
-                        let original_bytes = memory::read_bytes(address, step_len as usize)?;
+                        let original_bytes = patch::read_bytes(address, step_len as usize)?;
                         let mut opcode = [0u8; 4];
                         opcode.copy_from_slice(&original_bytes[..4]);
                         (original_bytes, u32::from_le_bytes(opcode), false)
@@ -493,8 +494,8 @@ fn instrument_internal(
                         return Err(SigHookError::UnsupportedOperation);
                     }
 
-                    let original_bytes = memory::read_bytes(address, step_len as usize)?;
-                    let original4 = memory::read_bytes(address, 4)?;
+                    let original_bytes = patch::read_bytes(address, step_len as usize)?;
+                    let original4 = patch::read_bytes(address, 4)?;
                     let mut opcode = [0u8; 4];
                     opcode.copy_from_slice(&original4);
                     (original_bytes, u32::from_le_bytes(opcode), false)
@@ -527,13 +528,13 @@ fn instrument_internal(
 
         if runtime_patch_installed {
             #[cfg(target_arch = "aarch64")]
-            let patch_result = memory::patch_u32(address, constants::BRK_OPCODE).map(|_| ());
+            let patch_result = patch::patch_u32(address, constants::BRK_OPCODE).map(|_| ());
 
             #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
             let patch_result = {
                 let mut trap_patch = vec![0x90u8; step_len as usize];
-                trap_patch[0] = memory::int3_opcode();
-                memory::patch_bytes_public(address, &trap_patch).map(|_| ())
+                trap_patch[0] = arch::int3_opcode();
+                patch::patch_bytes_public(address, &trap_patch).map(|_| ())
             };
 
             if let Err(err) = patch_result {
@@ -621,7 +622,7 @@ pub fn inline_hook(addr: u64, callback: InstrumentCallback) -> Result<u32, SigHo
 pub fn inline_hook_jump(addr: u64, replace_fn: u64) -> Result<u32, SigHookError> {
     #[cfg(target_arch = "aarch64")]
     {
-        let patch = match memory::encode_b(addr, replace_fn) {
+        let patch = match arch::encode_b(addr, replace_fn) {
             Ok(b_opcode) => b_opcode.to_le_bytes().to_vec(),
             Err(SigHookError::BranchOutOfRange) => {
                 let mut bytes = [0u8; 16];
@@ -633,9 +634,9 @@ pub fn inline_hook_jump(addr: u64, replace_fn: u64) -> Result<u32, SigHookError>
             Err(err) => return Err(err),
         };
 
-        let original = memory::read_bytes(addr, 16)?;
+        let original = patch::read_bytes(addr, 16)?;
         let inserted = unsafe { state::cache_inline_patch(addr, &original)? };
-        if let Err(err) = memory::patch_bytes_public(addr, &patch) {
+        if let Err(err) = patch::patch_bytes_public(addr, &patch) {
             if inserted {
                 unsafe {
                     state::remove_inline_patch(addr);
@@ -659,15 +660,15 @@ pub fn inline_hook_jump(addr: u64, replace_fn: u64) -> Result<u32, SigHookError>
 
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     {
-        let patch = if let Ok(jmp) = memory::encode_jmp_rel32(addr, replace_fn) {
+        let patch = if let Ok(jmp) = arch::encode_jmp_rel32(addr, replace_fn) {
             jmp.to_vec()
         } else {
-            memory::encode_absolute_jump(replace_fn).to_vec()
+            arch::encode_absolute_jump(replace_fn).to_vec()
         };
 
-        let original = memory::read_bytes(addr, memory::encode_absolute_jump(0).len())?;
+        let original = patch::read_bytes(addr, arch::encode_absolute_jump(0).len())?;
         let inserted = unsafe { state::cache_inline_patch(addr, &original)? };
-        if let Err(err) = memory::patch_bytes_public(addr, &patch) {
+        if let Err(err) = patch::patch_bytes_public(addr, &patch) {
             if inserted {
                 unsafe {
                     state::remove_inline_patch(addr);
@@ -717,21 +718,21 @@ pub fn unhook(address: u64) -> Result<(), SigHookError> {
     }
 
     unsafe {
-        if let Some(slot) = state::slot_by_address(address) {
+        if let Some(removal) = state::prepare_remove_slot(address) {
+            let slot = removal.slot();
             if slot.original_len == 0 {
                 return Err(SigHookError::InvalidAddress);
             }
 
             if slot.runtime_patch_installed {
-                memory::patch_bytes_public(
+                remove_runtime_slot_with_restore(
                     address,
+                    removal,
                     &slot.original_bytes[..slot.original_len as usize],
                 )?;
+            } else {
+                remove_prepatched_slot(removal)?;
             }
-
-            signal::wait_for_trap_handlers_quiescent()?;
-
-            let _ = state::remove_slot(address);
 
             state::remove_cached_original_opcode(address);
             return Ok(());
@@ -742,7 +743,7 @@ pub fn unhook(address: u64) -> Result<(), SigHookError> {
                 return Err(SigHookError::InvalidAddress);
             }
 
-            memory::patch_bytes_public(address, &bytes[..len as usize])?;
+            patch::patch_bytes_public(address, &bytes[..len as usize])?;
             state::remove_inline_patch(address);
             state::remove_cached_original_opcode(address);
             return Ok(());
@@ -750,6 +751,94 @@ pub fn unhook(address: u64) -> Result<(), SigHookError> {
     }
 
     Err(SigHookError::HookNotFound)
+}
+
+fn remove_runtime_slot_with_restore(
+    address: u64,
+    removal: state::PreparedSlotRemoval,
+    restore_bytes: &[u8],
+) -> Result<(), SigHookError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut removal = Some(removal);
+
+    loop {
+        signal::wait_for_trap_handlers_quiescent()?;
+
+        let prepared = match removal.take() {
+            Some(prepared) => prepared,
+            None => {
+                unsafe { state::prepare_remove_slot(address) }.ok_or(SigHookError::HookNotFound)?
+            }
+        };
+
+        let blocked_by_active_handler = std::cell::Cell::new(false);
+        let retired_snapshot = std::cell::Cell::new(0usize);
+        let result = patch::patch_bytes_public_with_paused_callbacks(
+            address,
+            restore_bytes,
+            || {
+                if signal::trap_handlers_active() {
+                    blocked_by_active_handler.set(true);
+                    return Err(SigHookError::PatchSynchronizationFailed);
+                }
+                Ok(())
+            },
+            || {
+                retired_snapshot.set(prepared.commit());
+            },
+        );
+
+        match result {
+            Ok(_) => {
+                state::retire_slot_snapshot(retired_snapshot.get());
+                return Ok(());
+            }
+            Err(_) if blocked_by_active_handler.get() && std::time::Instant::now() < deadline => {
+                std::thread::yield_now();
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn remove_prepatched_slot(removal: state::PreparedSlotRemoval) -> Result<(), SigHookError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let address = removal.slot().address;
+    let mut removal = Some(removal);
+
+    loop {
+        signal::wait_for_trap_handlers_quiescent()?;
+
+        let prepared = match removal.take() {
+            Some(prepared) => prepared,
+            None => {
+                unsafe { state::prepare_remove_slot(address) }.ok_or(SigHookError::HookNotFound)?
+            }
+        };
+
+        let blocked_by_active_handler = std::cell::Cell::new(false);
+        let retired_snapshot = std::cell::Cell::new(0usize);
+        let result = patch::sync::with_threads_paused(|| {
+            if signal::trap_handlers_active() {
+                blocked_by_active_handler.set(true);
+                return Err(SigHookError::PatchSynchronizationFailed);
+            }
+
+            retired_snapshot.set(prepared.commit());
+            Ok(())
+        });
+
+        match result {
+            Ok(()) => {
+                state::retire_slot_snapshot(retired_snapshot.get());
+                return Ok(());
+            }
+            Err(_) if blocked_by_active_handler.get() && std::time::Instant::now() < deadline => {
+                std::thread::yield_now();
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 /// Returns the saved original 4-byte value for a previously patched address.
@@ -793,7 +882,7 @@ pub fn original_opcode(address: u64) -> Option<u32> {
 /// # Ok::<(), sighook::SigHookError>(())
 /// ```
 pub fn patch_bytes(address: u64, bytes: &[u8]) -> Result<Vec<u8>, SigHookError> {
-    let original = memory::patch_bytes_public(address, bytes)?;
+    let original = patch::patch_bytes_public(address, bytes)?;
     if original.len() >= 4 {
         let mut opcode = [0u8; 4];
         opcode.copy_from_slice(&original[..4]);

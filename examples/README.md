@@ -53,12 +53,12 @@ Available examples:
 - `aarch64-apple-darwin`: `patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_fpregs` / `inline_hook_jump`
 - `aarch64-apple-darwin`: semantic smoke coverage for `instrument_nop_x16` / `instrument_blr_lr` / `instrument_b_cond_nv` / `prepatched_upgrade_execute_original`
 - `aarch64-apple-darwin`: plus optional `patch_asm` smoke (`--features patch_asm`)
-- `x86_64-apple-darwin`: runtime smoke coverage for 7 base examples (CI), plus optional `patch_asm` build
+- `x86_64-apple-darwin`: runtime smoke coverage for 8 base/stress examples (CI), plus optional `patch_asm` build
 - `aarch64-unknown-linux-gnu`: runtime smoke coverage for all 9 core examples (CI, includes `instrument_adrp_no_original` and `instrument_adrp_with_original`)
 - `aarch64-unknown-linux-gnu`: semantic smoke coverage for `instrument_nop_x16` / `instrument_blr_lr` / `instrument_b_cond_nv` / `prepatched_upgrade_execute_original`
 - `aarch64-unknown-linux-gnu`: plus `instrument_literal_fault_pc` runtime validation for literal replay fault-PC remap
 - `aarch64-unknown-linux-gnu`: plus optional `patch_asm` smoke (`--features patch_asm`)
-- `x86_64-unknown-linux-gnu`: runtime smoke coverage for 7 base examples (CI), plus optional `patch_asm` smoke (`--features patch_asm`)
+- `x86_64-unknown-linux-gnu`: runtime smoke coverage for 8 base/stress examples (CI), plus optional `patch_asm` smoke (`--features patch_asm`)
 
 ## Notes by architecture
 
