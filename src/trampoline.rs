@@ -5,10 +5,12 @@
 //! transfers control back to the sequential original PC. This is the generic
 //! execute-original fallback used when no direct replay plan is available.
 
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+use crate::arch::encode_jmp_rel32;
 #[cfg(target_arch = "aarch64")]
 use crate::constants::{BR_X16, LDR_X16_LITERAL_8};
 use crate::error::SigHookError;
-use crate::memory::{flush_instruction_cache, last_errno};
+use crate::platform::{flush_instruction_cache, last_errno};
 use libc::c_void;
 use std::ptr::null_mut;
 
@@ -88,7 +90,7 @@ pub(crate) fn create_original_trampoline(
         }
 
         let jmp_site = base + original_bytes.len();
-        if let Ok(rel_jmp) = crate::memory::encode_jmp_rel32(jmp_site as u64, next_pc) {
+        if let Ok(rel_jmp) = encode_jmp_rel32(jmp_site as u64, next_pc) {
             unsafe {
                 std::ptr::copy_nonoverlapping(rel_jmp.as_ptr(), jmp_site as *mut u8, rel_jmp.len());
             }

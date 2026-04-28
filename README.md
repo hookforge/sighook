@@ -34,7 +34,6 @@ It is designed for low-level experimentation, reverse engineering, and custom ru
 - `aarch64-unknown-linux-gnu`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
 - `aarch64-linux-android`: full API support (`patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump`)
 - `x86_64-unknown-linux-gnu`: full API support; CI smoke validates `patchcode` / `instrument` / `instrument_no_original` / `inline_hook` / `inline_hook_jump` examples
-- single-thread model (`static mut` internal state)
 
 `patch_asm` is currently available on:
 
@@ -243,6 +242,7 @@ iOS executable pages are code-signed. In normal (non-jailbreak) runtime environm
 - `inline_hook(...)` installs an entry trap and returns to caller by default when callback leaves `pc`/`rip` unchanged.
 - `inline_hook_jump(...)` uses architecture-specific near jump first, then far-jump fallback.
 - `unhook(...)` restores patch bytes for runtime-patched hooks; for `prepatched::*` hooks it removes runtime state only.
+- On `x86_64`, patch addresses must point to the first byte of an instruction. The decoder cannot reliably prove instruction boundaries from an arbitrary address inside a variable-length instruction stream.
 
 ## Safety Notes
 
@@ -250,6 +250,8 @@ This crate performs runtime code patching and raw context mutation.
 
 - Ensure target addresses are valid runtime addresses.
 - Ensure callback logic preserves ABI expectations.
+- Treat callbacks as signal-handler context: keep them small and avoid allocation, locking, `dlopen`, `mprotect`, hook installation/removal, or other runtime/loader operations.
+- Runtime patching temporarily pauses peer threads while changing executable pages. On Apple platforms this uses Mach thread suspension, so avoid patching while other threads may hold allocator, loader, Objective-C runtime, or VM-related locks.
 - Test on disposable binaries first.
 
 ## License
